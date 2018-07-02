@@ -8,11 +8,15 @@ and #6783 and #4451).
 
 Auth Redux is intended to be compatible with all versions of Minetest 0.4.14+.
 
+https://forum.minetest.net/viewtopic.php?f=9&t=20393
+
 Revision History
 ----------------------
 
-Version 2.1b (28-Jun-2018)
+Version 2.1b (30-Jun-2018)
   - initial beta version
+  - included code samples for basic login filtering
+  - included a command-line database import script
 
 Installation
 ----------------------
@@ -20,7 +24,8 @@ Installation
   1) Unzip the archive into the mods directory of your game
   2) Rename the auth_rx-master directory to "auth_rx"
   3) Create an empty file named "auth.dbx" within the respective world directory
-  4) Create an empty file named "greenlistmt" within the respective world directory
+  4) Create an empty file named "greenlist.mt" within the respective world directory
+  5) Execute the provided "convert.awk" script (refer to instructions)
 
 Source Code License
 ----------------------
