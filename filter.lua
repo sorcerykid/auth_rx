@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.1 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.2 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -60,9 +60,10 @@ function AuthFilter( path, name )
 	-- private methods
 	----------------------------
 
-	local throw = function ( msg, num )
-		-- minetest.log( "error", msg .. " (line " .. num .. ")" )
-		error( msg .. " (line " .. num .. ")" )
+	local trace = function ( msg, num )
+		-- TODO: Use 'pcall' for more graceful exception handling?
+		minetest.log( "error", string.format( "%s (%s/%s, line %d)", msg, path, name, num ) )
+		return "The server encountered an internal error."
 	end
 
 	local get_operand = function ( token, vars )
@@ -117,7 +118,7 @@ function AuthFilter( path, name )
 			v = string.gsub( v, "%$([a-zA-Z_]+)", function ( var )
 				return vars[ var ] and tostring( vars[ var ].value ) or "?"
 			end )
-		elseif string.find( token, "^%d+$" ) then
+		elseif string.find( token, "^-?%d+$" ) or string.find( token, "^-?%d*%.%d+$" ) then
 			t = FILTER_TYPE_NUMBER
 			v = tonumber( token )
 		else
@@ -167,10 +168,10 @@ function AuthFilter( path, name )
 				-- TODO: these should be stripped on file import
 
 			elseif stmt[ 1 ] == "continue" then
-				if #stmt ~= 1 then throw( "Invalid 'continue' statement in ruleset", num ) end
+				if #stmt ~= 1 then return trace( "Invalid 'continue' statement in ruleset", num ) end
 
 				if rule == nil then
-					throw( "No ruleset declared", num )
+					return trace( "No ruleset declared", num )
 				end
 
 				if evaluate( rule ) then
@@ -180,19 +181,19 @@ function AuthFilter( path, name )
 				rule = nil
 
 			elseif stmt[ 1 ] == "try" then
-				if rule then throw( "Missing 'continue' statement in ruleset", num ) end
-				if #stmt ~= 2 then throw( "Invalid 'try' statement in ruleset", num ) end
+				if rule then return trace( "Missing 'continue' statement in ruleset", num ) end
+				if #stmt ~= 2 then return trace( "Invalid 'try' statement in ruleset", num ) end
 
 				local oper = get_operand( stmt[ 2 ], vars )
-					if not oper then
-					throw( "Unrecognized operand in ruleset", num )
+				if not oper or oper.type ~= FILTER_TYPE_STRING then
+					return trace( "Unrecognized operand in ruleset", num )
 				end
 
 				note = oper.value
 
 			elseif stmt[ 1 ] == "pass" or stmt[ 1 ] == "fail" then
-				if rule then throw( "Missing continue statement in ruleset", num ) end
-				if #stmt ~= 2 then throw( "Invalid 'pass' or 'fail' statement in ruleset", num ) end
+				if rule then return trace( "Missing continue statement in ruleset", num ) end
+				if #stmt ~= 2 then return trace( "Invalid 'pass' or 'fail' statement in ruleset", num ) end
 
 				rule = { }
 
@@ -200,7 +201,7 @@ function AuthFilter( path, name )
 				local bool = ( { ["all"] = FILTER_BOOL_AND, ["any"] = FILTER_BOOL_OR, ["one"] = FILTER_BOOL_XOR, ["now"] = FILTER_BOOL_NOW } )[ stmt[ 2 ] ]
 
 				if not mode or not bool then
-					throw( "Unrecognized keywords in ruleset", num )
+					return trace( "Unrecognized keywords in ruleset", num )
 				end
 
 				if bool == FILTER_BOOL_NOW then
@@ -212,22 +213,22 @@ function AuthFilter( path, name )
 				rule.expr = { }
 
 			elseif stmt[ 1 ] == "when" or stmt[ 1 ] == "until" then
-				if #stmt ~= 4 then throw( "Invalid 'when' or 'until' statement in ruleset", num ) end
+				if #stmt ~= 4 then return trace( "Invalid 'when' or 'until' statement in ruleset", num ) end
 
 				local cond = ( { ["when"] = FILTER_COND_TRUE, ["until"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
 				local comp = ( { ["eq"] = FILTER_COMP_EQ, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
 
 				if not cond or not comp then
-					throw( "Unrecognized keywords in ruleset", num )
+					return trace( "Unrecognized keywords in ruleset", num )
 				end
 
 				local oper1 = get_operand( stmt[ 2 ], vars )
 				local oper2 = get_operand( stmt[ 4 ], vars )
 
 				if not oper1 or not oper2 then
-					throw( "Unrecognized operands in ruleset", num )
+					return trace( "Unrecognized operands in ruleset", num )
 				elseif oper1.type ~= FILTER_TYPE_SERIES then
-					throw( "Mismatched operands in ruleset", num )
+					return trace( "Mismatched operands in ruleset", num )
 				end
 
 				-- cache second operand value for efficiency
@@ -244,7 +245,7 @@ function AuthFilter( path, name )
 					elseif comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_PATTERN then
 						expr = ( string.find( string.upper( value1 ), value2 ) == 1 )
 					else
-						throw( "Mismatched operands in ruleset", num )
+						return trace( "Mismatched operands in ruleset", num )
 					end
 					if expr then break end
 				end
@@ -253,20 +254,20 @@ function AuthFilter( path, name )
 				table.insert( rule.expr, expr )
 
 			elseif stmt[ 1 ] == "if" or stmt[ 1 ] == "unless" then
-				if #stmt ~= 4 then throw( "Invalid 'if' or 'unless' statement in ruleset", num ) end
+				if #stmt ~= 4 then return trace( "Invalid 'if' or 'unless' statement in ruleset", num ) end
 
 				local cond = ( { ["if"] = FILTER_COND_TRUE, ["unless"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
 				local comp = ( { ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
 
 				if not cond or not comp then
-					throw( "Unrecognized keywords in ruleset", num )
+					return trace( "Unrecognized keywords in ruleset", num )
 				end
 
 				local oper1 = get_operand( stmt[ 2 ], vars )
 				local oper2 = get_operand( stmt[ 4 ], vars )
 
 				if not oper1 or not oper2 then
-					throw( "Unrecognized operands in ruleset", num )
+					return trace( "Unrecognized operands in ruleset", num )
 				end
 
 				-- FIXME: don't allow equality comparison of patterns or series
@@ -283,7 +284,7 @@ function AuthFilter( path, name )
 				elseif comp == FILTER_COMP_LT and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
 					expr = ( oper1.value < oper2.value )
 				else
-					throw( "Mismatched operands in ruleset", num )
+					return trace( "Mismatched operands in ruleset", num )
 				end
 				if cond == FILTER_COND_FALSE then expr = not expr end
 
@@ -293,10 +294,10 @@ function AuthFilter( path, name )
 				-- but probably requires state table; efficiency vs complexity scenario
 
 			else
-				throw( "Invalid statement in ruleset", num )
+				return trace( "Invalid statement in ruleset", num )
 			end
 		end
-		throw( "Unexpected end-of-file in ruleset", num )
+		return trace( "Unexpected end-of-file in ruleset", 0 )
 	end
 
 	return self
