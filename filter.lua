@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.2 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.3 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -22,8 +22,10 @@ FILTER_COND_FALSE = 40
 FILTER_COND_TRUE = 41
 FILTER_COMP_EQ = 50
 FILTER_COMP_GT = 51
-FILTER_COMP_LT = 52
-FILTER_COMP_IS = 53
+FILTER_COMP_GTE = 52
+FILTER_COMP_LT = 53
+FILTER_COMP_LTE = 54
+FILTER_COMP_IS = 55
 
 ----------------------------
 -- AuthFilter class
@@ -77,10 +79,10 @@ function AuthFilter( path, name )
 				t = vars[ var ].type
 				v = vars[ var ].value
 			end 
-		elseif string.find( token, "^@[a-zA-Z._-]*$" ) then
+		elseif string.find( token, "^@[a-zA-Z0-9_]*%.txt$" ) then
 			t = FILTER_TYPE_SERIES
 			v = { }
-		        local file = io.open( path .. "/" .. string.sub( token, 2 ), "rb" )
+			local file = io.open( path .. "/filters/" .. string.sub( token, 2 ), "rb" )
 			if not file then
 				return nil
 			end
@@ -91,24 +93,26 @@ function AuthFilter( path, name )
 			-- sanitize search phrase and convert to regexp pattern
 			local sanitizer =
 			{
-				["["] = "";
-				["]"] = "";
-				["^"] = "%^";
-				["$"] = "%$";
-				["("] = "%(";
-				[")"] = "%)";
-				["%"] = "%%";
-				["."] = "%.";
-				["-"] = "%-";
-				["*"] = "[a-zA-Z0-9_-]*";
-				["+"] = "[a-zA-Z0-9_-]+";
-				["?"] = "[a-zA-Z0-9_-]";
-				["#"] = "%d";
-				["~"] = "%a";
+				["["] = "",
+				["]"] = "",
+				["^"] = "%^",
+				["$"] = "%$",
+				["("] = "%(",
+				[")"] = "%)",
+				["%"] = "%%",
+				["-"] = "%-",
+				["."] = "[a-z]",
+				["!"] = "[A-Z]",
+				["*"] = "[a-zA-Z0-9_-]*",
+				["+"] = "[a-zA-Z0-9_-]+",
+				["?"] = "[a-zA-Z0-9_-]",
+				["#"] = "%d",
+				["~"] = "%a",
 			}
+
 			t = FILTER_TYPE_PATTERN
 			v = minetest.decode_base64( string.sub( token, 2 ) )
-			v = "^" .. string.gsub( string.upper( v ), ".", sanitizer ) .. "$"
+			v = "^" .. string.gsub( v, ".", sanitizer ) .. "$"
 		elseif string.find( token, "^'.*$" ) then
 			t = FILTER_TYPE_STRING
 			v = minetest.decode_base64( string.sub( token, 2 ) )
@@ -235,15 +239,16 @@ function AuthFilter( path, name )
 				-- TODO: might want to move the redundant operand type checks out of loop?
 
 				local value2 = ( comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_STRING ) and string.upper( oper2.value ) or oper2.value
+				local type2 = oper2.type
 				local expr = false
 
 				for i, value1 in ipairs( oper1.value ) do
-					if comp == FILTER_COMP_EQ and oper2.type == FILTER_TYPE_STRING then
+					if comp == FILTER_COMP_EQ and type2 == FILTER_TYPE_STRING then
 						expr = ( value1 == value2 )
-					elseif comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_STRING then
+					elseif comp == FILTER_COMP_IS and type2 == FILTER_TYPE_STRING then
 						expr = ( string.upper( value1 ) == value2 )
-					elseif comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_PATTERN then
-						expr = ( string.find( string.upper( value1 ), value2 ) == 1 )
+					elseif comp == FILTER_COMP_IS and type2 == FILTER_TYPE_PATTERN then
+						expr = ( string.find( value1, value2 ) == 1 )
 					else
 						return trace( "Mismatched operands in ruleset", num )
 					end
@@ -257,7 +262,7 @@ function AuthFilter( path, name )
 				if #stmt ~= 4 then return trace( "Invalid 'if' or 'unless' statement in ruleset", num ) end
 
 				local cond = ( { ["if"] = FILTER_COND_TRUE, ["unless"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
-				local comp = ( { ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
+				local comp = ( { ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["gte"] = FILTER_COMP_GTE, ["lte"] = FILTER_COMP_LTE, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
 
 				if not cond or not comp then
 					return trace( "Unrecognized keywords in ruleset", num )
@@ -270,19 +275,21 @@ function AuthFilter( path, name )
 					return trace( "Unrecognized operands in ruleset", num )
 				end
 
-				-- FIXME: don't allow equality comparison of patterns or series
-
 				local expr
 				if comp == FILTER_COMP_EQ and oper1.type == oper2.type and oper1.type ~= FILTER_TYPE_SERIES and oper1.type ~= FILTER_TYPE_PATTERN then
 					expr = ( oper1.value == oper2.value )
 				elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_STRING then
 					expr = ( string.upper( oper1.value ) == string.upper( oper2.value ) )
 				elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_PATTERN then
-					expr = ( string.find( string.upper( oper1.value ), oper2.value ) == 1 )
+					expr = ( string.find( oper1.value, oper2.value ) == 1 )
 				elseif comp == FILTER_COMP_GT and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
 					expr = ( oper1.value > oper2.value )
 				elseif comp == FILTER_COMP_LT and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
 					expr = ( oper1.value < oper2.value )
+				elseif comp == FILTER_COMP_GTE and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
+					expr = ( oper1.value >= oper2.value )
+				elseif comp == FILTER_COMP_LTE and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
+					expr = ( oper1.value <= oper2.value )
 				else
 					return trace( "Mismatched operands in ruleset", num )
 				end

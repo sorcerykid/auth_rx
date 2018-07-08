@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.1 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.3 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -112,33 +112,11 @@ end
 ----------------------------
 
 local AuthDatabase = function ( path, name )
-	local data, size, users, index
+	local data, users, index
 	local self = { }
 	local journal = Journal( path, name .. "x" )
 
 	-- Private methods
-
-	local find_phrase = function( source, phrase )
-		-- sanitize search phrase and convert to regexp pattern
-		local sanitizer =
-		{
-			["^"] = "%^";
-			["$"] = "%$";
-			["("] = "%(";
-			[")"] = "%)";
-			["%"] = "%%";
-			["."] = "%.";
-			["["] = "";
-			["]"] = "";
-			["*"] = "%w*";
-			["+"] = "%w+";
-			["-"] = "%-";
-			["?"] = "%w";
-		}
-        
-		-- parens capture only first return value of gsub
-		return string.find( source, ( string.gsub( phrase, ".", sanitizer ) ) ) 
-	end
 
 	local db_update = function( meta, optime, opcode, ... )
 		local fields = { ... }
@@ -205,9 +183,9 @@ local AuthDatabase = function ( path, name )
 	local db_reload = function ( )
 		minetest.log( "action", "Reading authentication data from disk..." )
 
-		local file, errmsg = io.open( path .. "/auth.db", "r+b" )
+		local file, errmsg = io.open( path .. "/" .. name, "r+b" )
 		if not file then
-			minetest.log( "error", "Cannot open " .. path .. "/auth.db for reading." )
+			minetest.log( "error", "Cannot open " .. path .. "/" .. name .. " for reading." )
 			error( "Fatal exception in AuthDatabase:reload( ), aborting." )
 		end
 
@@ -237,7 +215,6 @@ local AuthDatabase = function ( path, name )
 					approved_addrs = string.split( fields[ 9 ], "," ),
 					assigned_privs = string.split( fields[ 10 ], "," ),
 				}
-				size = size + 1
 			end
 		end
 		file:close( )
@@ -271,14 +248,13 @@ local AuthDatabase = function ( path, name )
 		end
 		file:close( )
 
-		assert( os.remove( path .. "/auth.db" ) )
-		assert( os.rename( path .. "/~auth.db", path .. "/auth.db" ) )
+		assert( os.remove( path .. "/" .. name ) )
+		assert( os.rename( path .. "/~" .. name, path .. "/" .. name ) )
 	end
 
 	-- Public methods
 
 	self.connect = function ( )
-		size = 0
 		data = { }
 		users = { }
 
@@ -296,7 +272,6 @@ local AuthDatabase = function ( path, name )
 		journal.reset( )
 
 		data = nil
-		size = nil
 		users = nil
 	end
 
@@ -317,7 +292,6 @@ local AuthDatabase = function ( path, name )
 			assigned_privs = { },
 		}
 		data[ username ] = rec
-		size = size + 1
 		journal.record_raw( TX_CREATE, username, password )
 
 		return true
@@ -328,7 +302,6 @@ local AuthDatabase = function ( path, name )
 		if not data[ username ] or users[ username ] then return false end
 
 		data[ username ] = nil
-		size = size - 1
 		journal.record_raw( TX_DELETE, username )
 
 		return true
@@ -392,15 +365,19 @@ local AuthDatabase = function ( path, name )
 		return pairs( data )
 	end
 
-	self.records_match = function ( phrase )
+	self.records_match = function ( pattern )
 		local k
 		return function ( )
 			local v
-			local p = string.lower( phrase )
+			local p = string.lower( pattern )
 
-			k, v = next( data, k )
-			if find_phrase( string.lower( k ), p ) then
-				return k, v
+			while true do
+				k, v = next( data, k )
+				if not k then
+					return
+				elseif string.match( string.lower( k ), p ) then
+					return k, v
+				end
 			end
 		end
 	end
@@ -478,8 +455,6 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		failures = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_failures or 0 },
 		attempts = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_attempts or 0 },
 	} )
-
-	-- TODO: Add optional filter logging capabilities
 
 	return filter_err 
 end )
