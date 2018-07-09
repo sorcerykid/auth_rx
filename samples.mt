@@ -32,9 +32,9 @@ continue
 try "This subnet is blocked by the administrator."
 
 fail any
-if $addr is "192.88.99.*"
-if $addr is "203.0.113.*"
-if $addr is "192.168.*.*"
+if $addr is /192.88.99.*/
+if $addr is /203.0.113.*/
+if $addr is /192.168.*.*/
 continue
 
 pass now

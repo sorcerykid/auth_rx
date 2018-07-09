@@ -101,15 +101,16 @@ function AuthFilter( path, name )
 				[")"] = "%)",
 				["%"] = "%%",
 				["-"] = "%-",
-				["."] = "[a-z]",
-				["!"] = "[A-Z]",
+				[","] = "[a-z]",
+				[";"] = "[A-Z]",
+				["="] = "[-_]",
+				["!"] = "[a-zA-Z0-9]",
 				["*"] = "[a-zA-Z0-9_-]*",
 				["+"] = "[a-zA-Z0-9_-]+",
 				["?"] = "[a-zA-Z0-9_-]",
 				["#"] = "%d",
-				["~"] = "%a",
+				["&"] = "%a",
 			}
-
 			t = FILTER_TYPE_PATTERN
 			v = minetest.decode_base64( string.sub( token, 2 ) )
 			v = "^" .. string.gsub( v, ".", sanitizer ) .. "$"
