@@ -1,4 +1,4 @@
-Auth Redux Mod v2.3b
+Auth Redux Mod v2.4b
 By Leslie Krause
 
 Auth Redux is a drop-in replacement for the builtin authentication handler of Minetest.
@@ -42,6 +42,17 @@ Version 2.3b (08-Jul-2018)
   - tweaked pattern matching behavior in rulesets
   - changed database search method to use Lua regexes
   - removed hard-coded file names from database methods
+
+Version 2.4b (13-Jul-2018)
+  - moved Journal and AuthDatabase classes into library
+  - added rollback function to AuthDatabase class
+  - reworked journal audit to support rollback option
+  - better encapsulated database commit function
+  - allowed for STOPPED opcode during database update
+  - various changes to error and action messages
+  - moved command-line scripts to separate directory
+  - included script to rollback database via journal
+  - included script to extract debug log into journal
 
 Installation
 ----------------------
