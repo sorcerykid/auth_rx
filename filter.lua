@@ -1,10 +1,8 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.3 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.5 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
---
--- ./games/minetest_game/mods/auth_rx/filter.lua
 --------------------------------------------------------
 
 FILTER_TYPE_STRING = 11
@@ -27,6 +25,12 @@ FILTER_COMP_LT = 53
 FILTER_COMP_LTE = 54
 FILTER_COMP_IS = 55
 
+local decode_base64 = minetest.decode_base64
+local encode_base64 = minetest.encode_base64
+local trim = function ( str )
+	return string.sub( str, 2, -2 )
+end
+
 ----------------------------
 -- AuthFilter class
 ----------------------------
@@ -42,54 +46,105 @@ function AuthFilter( path, name )
 	end
 
 	for line in file:lines( ) do
-		-- encode string and pattern literals to make parsing easier
+		-- encode string and pattern literals and function arguments to simplify parsing
 		line = string.gsub( line, "\"(.-)\"", function ( str )
-			return "\"" .. minetest.encode_base64( str )
+			return "\"" .. encode_base64( str ) .. ";"
 		end )
 		line = string.gsub( line, "'(.-)'", function ( str )
-			return "'" .. minetest.encode_base64( str )
+			return "'" .. encode_base64( str ) .. ";"
 		end )
 		line = string.gsub( line, "/(.-)/", function ( str )
-			return "/" .. minetest.encode_base64( str )
+			return "/" .. encode_base64( str ) .. ";"
 		end )
-
+		line = string.gsub( line, "%b()", function ( str )
+			return "&" .. encode_base64( trim( str ) ) .. ";"
+		end )
 		table.insert( src, line )
 	end
 
 	file:close( file )
 
+	local funcs = {
+		["add"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a + b end },
+		["sub"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a - b end },
+		["mul"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a * b end },
+		["div"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a / b end },
+		["neg"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return -a end },
+		["int"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return a < 0 and math.ceil( a ) or math.floor( a ) end },
+		["len"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.len( a ) end },
+		["lc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.lower( a ) end },
+		["uc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.upper( a ) end },
+		["range"] = { type = FILTER_TYPE_BOOLEAN, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b, c ) return a >= b and a <= c end },
+		["trim"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b, c ) return string.sub( a, 1 + b, -1 - c ) end },
+        }
+
 	----------------------------
 	-- private methods
 	----------------------------
 
-	local trace = function ( msg, num )
+	local get_operand, trace, evaluate
+
+	trace = function ( msg, num )
 		-- TODO: Use 'pcall' for more graceful exception handling?
 		minetest.log( "error", string.format( "%s (%s/%s, line %d)", msg, path, name, num ) )
 		return "The server encountered an internal error."
 	end
 
-	local get_operand = function ( token, vars )
-		local t, v
+	get_operand = function ( token, vars )
+		local t, v, ref
 
-		if string.find( token, "^%$[a-zA-Z_]+$" ) then
-			local var = string.sub( token, 2 )
-			if not vars[ var ] then
+		local find_token = function ( pat )
+			-- use back-references for easier conditional branching
+			ref = { string.match( token, pat ) }
+			return #ref > 0 and #ref
+		end
+
+		if find_token( "^(.-)([a-zA-Z0-9_]+)&([A-Za-z0-9+/]*);$" ) then
+			local name = ref[ 2 ]
+			local suffix = decode_base64( ref[ 3 ] )
+			local prefix = ref[ 1 ]
+			suffix = string.gsub( suffix, "%b()", function( str )
+				-- encode nested function arguments
+				return "&" .. encode_base64( trim( str ) ) .. ";"
+			end )
+			local args = string.split( suffix, ",", false )
+			if string.match( prefix, "->$" ) then
+				-- insert prefixed arguments
+				table.insert( args, 1, string.sub( prefix, 1, -3 ) )
+			elseif prefix ~= "" then
 				return nil
-			else
-				t = vars[ var ].type
-				v = vars[ var ].value
-			end 
-		elseif string.find( token, "^@[a-zA-Z0-9_]*%.txt$" ) then
+			end
+			if not funcs[ name ] or #funcs[ name ].args ~= #args then
+				return nil
+			end
+			local params = { }
+			for i, v in ipairs( args ) do
+				local oper = get_operand( v, vars )
+				if not oper or oper.type ~= funcs[ name ].args[ i ] then
+					return nil
+				end
+				table.insert( params, oper.value )
+			end
+			t = funcs[ name ].type
+			v = funcs[ name ].def( unpack( params ) )
+		elseif find_token( "^%$([a-zA-Z0-9_]+)$" ) then
+			local name = ref[ 1 ]
+			if not vars[ name ] then
+				return nil
+			end
+			t = vars[ name ].type
+			v = vars[ name ].value
+		elseif find_token( "^@([a-zA-Z0-9_]+%.txt)$" ) then
 			t = FILTER_TYPE_SERIES
 			v = { }
-			local file = io.open( path .. "/filters/" .. string.sub( token, 2 ), "rb" )
+			local file = io.open( path .. "/filters/" .. ref[ 1 ], "rb" )
 			if not file then
 				return nil
 			end
 			for line in file:lines( ) do
 				table.insert( v, line )
 			end
-		elseif string.find( token, "^/.*$" ) then
+		elseif find_token( "^/([a-zA-Z0-9+/]*);$" ) then
 			-- sanitize search phrase and convert to regexp pattern
 			local sanitizer =
 			{
@@ -112,18 +167,18 @@ function AuthFilter( path, name )
 				["&"] = "%a",
 			}
 			t = FILTER_TYPE_PATTERN
-			v = minetest.decode_base64( string.sub( token, 2 ) )
+			v = minetest.decode_base64( ref[ 1 ] )
 			v = "^" .. string.gsub( v, ".", sanitizer ) .. "$"
-		elseif string.find( token, "^'.*$" ) then
+		elseif find_token( "^'([a-zA-Z0-9+/]*);$" ) then
 			t = FILTER_TYPE_STRING
-			v = minetest.decode_base64( string.sub( token, 2 ) )
-		elseif string.find( token, "^\".*$" ) then
+			v = minetest.decode_base64( ref[ 1 ] )
+		elseif find_token( "^\"([a-zA-Z0-9+/]*);$" ) then
 			t = FILTER_TYPE_STRING
-			v = minetest.decode_base64( string.sub( token, 2 ) )
+			v = minetest.decode_base64( ref[ 1 ] )
 			v = string.gsub( v, "%$([a-zA-Z_]+)", function ( var )
 				return vars[ var ] and tostring( vars[ var ].value ) or "?"
 			end )
-		elseif string.find( token, "^-?%d+$" ) or string.find( token, "^-?%d*%.%d+$" ) then
+		elseif find_token( "^-?%d+$" ) or find_token( "^-?%d*%.%d+$" ) then
 			t = FILTER_TYPE_NUMBER
 			v = tonumber( token )
 		else
