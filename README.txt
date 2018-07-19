@@ -1,4 +1,4 @@
-Auth Redux Mod v2.5b
+Auth Redux Mod v2.6b
 By Leslie Krause
 
 Auth Redux is a drop-in replacement for the builtin authentication handler of Minetest.
@@ -60,6 +60,16 @@ Version 2.5b (17-Jul-2018)
   - improved transcoding of literals in rulesets
   - added some basic functions for use by rulesets
   - fixed validation of dataset names in rulesets
+
+Version 2.6b (19-Jul-2018)
+  - introduced support for array literals in rulesets
+  - added array-related functions for use by rulesets
+  - localized references to transcoding functions
+  - registered chat command to control login filtering
+  - included support for disabling login filtering
+  - added reload function to AuthFilter class
+  - tweaked lexer to skip comments on ruleset loading
+  - added search function to AuthDatabase class
 
 Installation
 ----------------------

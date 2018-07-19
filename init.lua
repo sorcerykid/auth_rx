@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.4 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.6 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -66,13 +66,14 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 	        name = { type = FILTER_TYPE_STRING, value = player_name },
 		addr = { type = FILTER_TYPE_STRING, value = player_ip },
 		is_new = { type = FILTER_TYPE_BOOLEAN, value = rec == nil },
-		priv_list = { type = FILTER_TYPE_SERIES, value = rec and rec.assigned_privs or { } },
-		addr_list = { type = FILTER_TYPE_SERIES, value = rec and rec.approved_addrs or { } },
-		cur_users = { type = FILTER_TYPE_NUMBER, value = #minetest.get_connected_players( ) },
+		privs_list = { type = FILTER_TYPE_SERIES, value = rec and rec.assigned_privs or { } },
+		users_list = { type = FILTER_TYPE_SERIES, value = auth_db.search( true ) },
+		cur_users = { type = FILTER_TYPE_NUMBER, value = #auth_db.search( true ) },
 		max_users = { type = FILTER_TYPE_NUMBER, value = get_minetest_config( "max_users" ) },
-		lifetime = { type = FILTER_TYPE_NUMBER, value = rec and rec.lifetime or 0 },
+		sessions = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_sessions or 0 },
 		failures = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_failures or 0 },
 		attempts = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_attempts or 0 },
+		owner = { type = FILTER_TYPE_STRING, value = get_minetest_config( "name" ) },
 	} )
 
 	return filter_err 
@@ -139,6 +140,29 @@ minetest.register_authentication_handler( {
 	record_login = function ( ) end,
 	reload = function ( ) end,
 	iterate = auth_db.records
+} )
+
+minetest.register_chatcommand( "filter", {
+        description = "Enable or disable ruleset-based login filtering, or reload a ruleset definition.",
+        privs = { server = true },
+        func = function( name, param )
+                if param == "" then
+                        return true, "Login filtering is currently " .. ( auth_filter.is_active( ) and "enabled" or "disabled" ) .. "."
+                elseif param == "disable" then
+			auth_filter.disable( )
+			minetest.log( "action", "Login filtering disabled by " .. name .. "." )
+			return true, "Login filtering is disabled."
+                elseif param == "enable" then
+			auth_filter.enable( )
+			minetest.log( "action", "Login filtering enabled by " .. name .. "." )
+			return true, "Login filtering is enabled."
+                elseif param == "reload" then
+			auth_filter.refresh( )
+			return true, "Ruleset definition was loaded successfully."
+		else
+			return false, "Unknown parameter specified."
+		end
+        end
 } )
 
 auth_db.connect( )

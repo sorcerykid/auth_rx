@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.5 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.6 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -36,33 +36,9 @@ end
 ----------------------------
 
 function AuthFilter( path, name )
-	local src = { }
-	local opt = { is_debug = false, is_strict = true }
+	local src
+	local opt = { is_debug = false, is_strict = true, is_active = true }
 	local self = { }
-
-	local file = io.open( path .. "/" .. name, "rb" )
-	if not file then
-		error( "The specified ruleset file does not exist." )
-	end
-
-	for line in file:lines( ) do
-		-- encode string and pattern literals and function arguments to simplify parsing
-		line = string.gsub( line, "\"(.-)\"", function ( str )
-			return "\"" .. encode_base64( str ) .. ";"
-		end )
-		line = string.gsub( line, "'(.-)'", function ( str )
-			return "'" .. encode_base64( str ) .. ";"
-		end )
-		line = string.gsub( line, "/(.-)/", function ( str )
-			return "/" .. encode_base64( str ) .. ";"
-		end )
-		line = string.gsub( line, "%b()", function ( str )
-			return "&" .. encode_base64( trim( str ) ) .. ";"
-		end )
-		table.insert( src, line )
-	end
-
-	file:close( file )
 
 	local funcs = {
 		["add"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a + b end },
@@ -70,15 +46,20 @@ function AuthFilter( path, name )
 		["mul"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a * b end },
 		["div"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a / b end },
 		["neg"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return -a end },
-		["max"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a, b ) return math.max( a, b ) end },
-		["min"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a, b ) return math.min( a, b ) end },
+		["abs"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return math.abs( a ) end },
+		["max"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return math.max( a, b ) end },
+		["min"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return math.min( a, b ) end },
 		["int"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return a < 0 and math.ceil( a ) or math.floor( a ) end },
+		["num"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_STRING }, def = function ( a ) return tonumber( a ) or 0 end },
 		["len"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.len( a ) end },
 		["lc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.lower( a ) end },
 		["uc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.upper( a ) end },
 		["range"] = { type = FILTER_TYPE_BOOLEAN, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b, c ) return a >= b and a <= c end },
 		["trim"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( a, b ) return b > 0 and string.sub( a, 1, -b - 1 ) or string.sub( a, -b + 1 ) end },
 		["crop"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( a, b ) return b > 0 and string.sub( a, 1, b ) or string.sub( a, b, -1 ) end },
+		["size"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_SERIES }, def = function ( a ) return #a end },
+		["elem"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a[ b ] or "" end },
+		["split"] = { type = FILTER_TYPE_SERIES, args = { FILTER_TYPE_STRING, FILTER_TYPE_STRING }, def = function ( a, b ) return string.split( a, b, true ) end },
         }
 
 	----------------------------
@@ -121,8 +102,8 @@ function AuthFilter( path, name )
 				return nil
 			end
 			local params = { }
-			for i, v in ipairs( args ) do
-				local oper = get_operand( v, vars )
+			for i, a in ipairs( args ) do
+				local oper = get_operand( a, vars )
 				if not oper or oper.type ~= funcs[ name ].args[ i ] then
 					return nil
 				end
@@ -130,6 +111,22 @@ function AuthFilter( path, name )
 			end
 			t = funcs[ name ].type
 			v = funcs[ name ].def( unpack( params ) )
+		elseif find_token( "^&([A-Za-z0-9+/]*);$" ) then
+			t = FILTER_TYPE_SERIES
+			v = { }
+			local suffix = decode_base64( ref[ 1 ] )
+			suffix = string.gsub( suffix, "%b()", function( str )
+				-- encode nested function arguments
+				return "&" .. encode_base64( trim( str ) ) .. ";"
+			end )
+			local elems = string.split( suffix, ",", false )
+			for i, e in ipairs( elems ) do
+				local oper = get_operand( e, vars )
+				if not oper or oper.type ~= FILTER_TYPE_STRING then
+					return nil
+				end
+				table.insert( v, oper.value )
+			end
 		elseif find_token( "^%$([a-zA-Z0-9_]+)$" ) then
 			local name = ref[ 1 ]
 			if not vars[ name ] then
@@ -170,14 +167,14 @@ function AuthFilter( path, name )
 				["&"] = "%a",
 			}
 			t = FILTER_TYPE_PATTERN
-			v = minetest.decode_base64( ref[ 1 ] )
+			v = decode_base64( ref[ 1 ] )
 			v = "^" .. string.gsub( v, ".", sanitizer ) .. "$"
 		elseif find_token( "^'([a-zA-Z0-9+/]*);$" ) then
 			t = FILTER_TYPE_STRING
-			v = minetest.decode_base64( ref[ 1 ] )
+			v = decode_base64( ref[ 1 ] )
 		elseif find_token( "^\"([a-zA-Z0-9+/]*);$" ) then
 			t = FILTER_TYPE_STRING
-			v = minetest.decode_base64( ref[ 1 ] )
+			v = decode_base64( ref[ 1 ] )
 			v = string.gsub( v, "%$([a-zA-Z_]+)", function ( var )
 				return vars[ var ] and tostring( vars[ var ].value ) or "?"
 			end )
@@ -190,7 +187,7 @@ function AuthFilter( path, name )
 		return { type = t, value = v }
 	end
 
-	local evaluate = function ( rule )
+	evaluate = function ( rule )
 		-- short circuit binary logic to simplify evaluation
 		local res = ( rule.bool == FILTER_BOOL_AND )
 		local xor = 0
@@ -213,22 +210,47 @@ function AuthFilter( path, name )
 	-- public methods
 	----------------------------
 
+	self.refresh = function ( )
+		local file = io.open( path .. "/" .. name, "rb" )
+		if not file then
+			error( "The specified ruleset file does not exist." )
+		end
+		src = { }
+		for line in file:lines( ) do
+			-- encode string and pattern literals and function arguments to simplify parsing
+			line = string.gsub( line, "\"(.-)\"", function ( str )
+				return "\"" .. encode_base64( str ) .. ";"
+			end )
+			line = string.gsub( line, "'(.-)'", function ( str )
+				return "'" .. encode_base64( str ) .. ";"
+			end )
+			line = string.gsub( line, "/(.-)/", function ( str )
+				return "/" .. encode_base64( str ) .. ";"
+			end )
+			line = string.gsub( line, "%b()", function ( str )
+				return "&" .. encode_base64( trim( str ) ) .. ";"
+			end )
+			-- skip comments (lines beginning with hash character) and blank lines
+			table.insert( src, string.byte( line ) ~= 35 and line or "" )
+		end
+		file:close( file )
+	end
+
 	self.process = function( vars )
 		local rule
 		local note = "Access denied."
+
+		if not opt.is_active then return end
 
 		vars[ "true" ] = { type = FILTER_TYPE_BOOLEAN, value = true }
 		vars[ "false" ] = { type = FILTER_TYPE_BOOLEAN, value = false }
 		vars[ "time" ] = { type = FILTER_TYPE_NUMBER, value = os.time( ) }
 
 		for num, line in ipairs( src ) do
-
-			-- FIXME: ignore extraneous whitespace, even at beginning of line
 			local stmt = string.split( line, " ", false )
 
-			if string.byte( line ) == 35 or #stmt == 0 then
-				-- skip comments (lines beginning with hash character) and empty lines
-				-- TODO: these should be stripped on file import
+			if #stmt == 0 then
+				-- skip no-op statements
 
 			elseif stmt[ 1 ] == "continue" then
 				if #stmt ~= 1 then return trace( "Invalid 'continue' statement in ruleset", num ) end
@@ -358,13 +380,26 @@ function AuthFilter( path, name )
 
 				-- TODO: immediately evaluating each expression (thus avoiding a list) would be optimal,
 				-- but probably requires state table; efficiency vs complexity scenario
-
 			else
 				return trace( "Invalid statement in ruleset", num )
 			end
 		end
 		return trace( "Unexpected end-of-file in ruleset", 0 )
 	end
+
+	self.enable = function ( )
+		opt.is_active = true
+	end
+
+	self.disable = function ( )
+		opt.is_active = false
+	end
+
+	self.is_active = function ( )
+		return opt.is_active
+	end
+
+	self.refresh( )
 
 	return self
 end

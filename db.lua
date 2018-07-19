@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.4 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.6 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -396,6 +396,17 @@ function AuthDatabase( path, name )
 
 	self.select_record = function ( username )
 		return data[ username ]
+	end
+
+	self.search = function ( is_online, pattern )
+		local res = { }
+		local src = is_online and users or data
+		for k, v in pairs( src ) do
+			if pattern == nil or string.match( k, pattern ) then
+				table.insert( res, k )
+			end
+		end
+		return res		
 	end
 
 	return self
