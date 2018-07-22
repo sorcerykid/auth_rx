@@ -1,15 +1,19 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.6 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.7 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
 --------------------------------------------------------
 
 FILTER_TYPE_STRING = 11
-FILTER_TYPE_BOOLEAN = 12
-FILTER_TYPE_NUMBER = 13
+FILTER_TYPE_NUMBER = 12
+FILTER_TYPE_BOOLEAN = 13
 FILTER_TYPE_PATTERN = 14
 FILTER_TYPE_SERIES = 15
+FILTER_TYPE_PERIOD = 16
+FILTER_TYPE_MOMENT = 17
+FILTER_TYPE_DATESPEC = 18
+FILTER_TYPE_TIMESPEC = 19
 FILTER_MODE_FAIL = 20
 FILTER_MODE_PASS = 21
 FILTER_BOOL_AND = 30
@@ -60,7 +64,12 @@ function AuthFilter( path, name )
 		["size"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_SERIES }, def = function ( a ) return #a end },
 		["elem"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a[ b ] or "" end },
 		["split"] = { type = FILTER_TYPE_SERIES, args = { FILTER_TYPE_STRING, FILTER_TYPE_STRING }, def = function ( a, b ) return string.split( a, b, true ) end },
-        }
+		["time"] = { type = FILTER_TYPE_TIMESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return a % 86400 end },
+		["date"] = { type = FILTER_TYPE_DATESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return math.floor( a / 86400 ) end },
+		["age"] = { type = FILTER_TYPE_PERIOD, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return os.time( ) - a end },	-- FIXME: use global clock variable
+		["before"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a - b end },
+		["after"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a + b end },
+	}
 
 	----------------------------
 	-- private methods
@@ -169,6 +178,27 @@ function AuthFilter( path, name )
 			t = FILTER_TYPE_PATTERN
 			v = decode_base64( ref[ 1 ] )
 			v = "^" .. string.gsub( v, ".", sanitizer ) .. "$"
+		elseif find_token( "^(%d+)([ydhms])$" ) then
+			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
+			t = FILTER_TYPE_PERIOD
+			v = tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
+		elseif find_token( "^([-+]%d+)([ydhms])$" ) then
+			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
+			local origin = string.byte( ref[ 1 ] ) == 45 and vars.clock.value or 0
+			t = FILTER_TYPE_MOMENT
+			v = origin + tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
+		elseif find_token( "^(%d?%d):(%d%d):(%d%d)$" ) or find_token( "^(%d?%d):(%d%d)$" ) then
+			local timespec = {
+				isdst = true, day = 1, month = 1, year = 1970, hour = tonumber( ref[ 1 ] ), min = tonumber( ref[ 2 ] ), sec = ref[ 3 ] and tonumber( ref[ 3 ] ) or 0,
+			}
+			t = FILTER_TYPE_TIMESPEC
+			v = os.time( timespec )
+		elseif find_token( "^(%d%d)%-(%d%d)%-(%d%d%d%d)$" ) then
+			local datespec = {
+				isdst = true, day = tonumber( ref[ 1 ] ), month = tonumber( ref[ 2 ] ), year = tonumber( ref[ 3 ] ), hour = 0,
+			}
+			t = FILTER_TYPE_DATESPEC
+			v = math.floor( os.time( datespec ) / 86400 )
 		elseif find_token( "^'([a-zA-Z0-9+/]*);$" ) then
 			t = FILTER_TYPE_STRING
 			v = decode_base64( ref[ 1 ] )
@@ -244,7 +274,8 @@ function AuthFilter( path, name )
 
 		vars[ "true" ] = { type = FILTER_TYPE_BOOLEAN, value = true }
 		vars[ "false" ] = { type = FILTER_TYPE_BOOLEAN, value = false }
-		vars[ "time" ] = { type = FILTER_TYPE_NUMBER, value = os.time( ) }
+		vars[ "clock" ] = { type = FILTER_TYPE_MOMENT, value = os.time( ) }
+		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = 0 }
 
 		for num, line in ipairs( src ) do
 			local stmt = string.split( line, " ", false )
@@ -356,21 +387,24 @@ function AuthFilter( path, name )
 					return trace( "Unrecognized operands in ruleset", num )
 				end
 
+				-- only allow comparisons of appropriate and equivalent datatypes
+				local do_math = { [FILTER_TYPE_STRING] = false, [FILTER_TYPE_NUMBER] = true, [FILTER_TYPE_PERIOD] = true, [FILTER_TYPE_MOMENT] = true, [FILTER_TYPE_DATESPEC] = true, [FILTER_TYPE_TIMESPEC] = true }
+
 				local expr
 				if comp == FILTER_COMP_EQ and oper1.type == oper2.type and oper1.type ~= FILTER_TYPE_SERIES and oper1.type ~= FILTER_TYPE_PATTERN then
 					expr = ( oper1.value == oper2.value )
+				elseif comp == FILTER_COMP_GT and oper1.type == oper2.type and do_math[ oper2.type ] then
+					expr = ( oper1.value > oper2.value )
+				elseif comp == FILTER_COMP_GTE and oper1.type == oper2.type and do_math[ oper2.type ] then
+					expr = ( oper1.value >= oper2.value )
+				elseif comp == FILTER_COMP_LT and oper1.type == oper2.type and do_math[ oper2.type ] then
+					expr = ( oper1.value < oper2.value )
+				elseif comp == FILTER_COMP_LTE and oper1.type == oper2.type and do_math[ oper2.type ] then
+					expr = ( oper1.value <= oper2.value )
 				elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_STRING then
 					expr = ( string.upper( oper1.value ) == string.upper( oper2.value ) )
 				elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_PATTERN then
 					expr = ( string.find( oper1.value, oper2.value ) == 1 )
-				elseif comp == FILTER_COMP_GT and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
-					expr = ( oper1.value > oper2.value )
-				elseif comp == FILTER_COMP_LT and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
-					expr = ( oper1.value < oper2.value )
-				elseif comp == FILTER_COMP_GTE and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
-					expr = ( oper1.value >= oper2.value )
-				elseif comp == FILTER_COMP_LTE and oper1.type == FILTER_TYPE_NUMBER and oper2.type == FILTER_TYPE_NUMBER then
-					expr = ( oper1.value <= oper2.value )
 				else
 					return trace( "Mismatched operands in ruleset", num )
 				end

@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.6 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.7 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -18,10 +18,10 @@ local auth_db = AuthDatabase( minetest.get_worldpath( ), "auth.db" )
 local get_minetest_config = core.setting_get	-- backwards compatibility
 
 function get_default_privs( )
-        local default_privs = { }
-        for _, p in pairs( string.split( get_minetest_config( "default_privs" ), "," ) ) do
-       	        table.insert( default_privs, string.trim( p ) )
-        end
+	local default_privs = { }
+	for _, p in pairs( string.split( get_minetest_config( "default_privs" ), "," ) ) do
+		table.insert( default_privs, string.trim( p ) )
+	end
 	return default_privs
 end
 
@@ -55,15 +55,15 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 	else
 		-- prevent creation of case-insensitive duplicate accounts
 		local uname = string.lower( player_name )
-                for cname in auth_db.records( ) do
-                        if string.lower( cname ) == uname then
+		for cname in auth_db.records( ) do
+		if string.lower( cname ) == uname then
 				return string.format( "A player named %s already exists on this server.", cname )
 			end
 		end
 	end
 
 	local filter_err = auth_filter.process( {
-	        name = { type = FILTER_TYPE_STRING, value = player_name },
+		name = { type = FILTER_TYPE_STRING, value = player_name },
 		addr = { type = FILTER_TYPE_STRING, value = player_ip },
 		is_new = { type = FILTER_TYPE_BOOLEAN, value = rec == nil },
 		privs_list = { type = FILTER_TYPE_SERIES, value = rec and rec.assigned_privs or { } },
@@ -74,6 +74,9 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		failures = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_failures or 0 },
 		attempts = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_attempts or 0 },
 		owner = { type = FILTER_TYPE_STRING, value = get_minetest_config( "name" ) },
+		uptime = { type = FILTER_TYPE_PERIOD, value = minetest.get_server_uptime( ) },
+		oldlogin = { type = FILTER_TYPE_MOMENT, value = rec and rec.oldlogin or 0 },
+		newlogin = { type = FILTER_TYPE_MOMENT, value = rec and rec.newlogin or 0 },
 	} )
 
 	return filter_err 
@@ -143,26 +146,26 @@ minetest.register_authentication_handler( {
 } )
 
 minetest.register_chatcommand( "filter", {
-        description = "Enable or disable ruleset-based login filtering, or reload a ruleset definition.",
-        privs = { server = true },
-        func = function( name, param )
-                if param == "" then
-                        return true, "Login filtering is currently " .. ( auth_filter.is_active( ) and "enabled" or "disabled" ) .. "."
-                elseif param == "disable" then
+	description = "Enable or disable ruleset-based login filtering, or reload a ruleset definition.",
+	privs = { server = true },
+	func = function( name, param )
+		if param == "" then
+		return true, "Login filtering is currently " .. ( auth_filter.is_active( ) and "enabled" or "disabled" ) .. "."
+		elseif param == "disable" then
 			auth_filter.disable( )
 			minetest.log( "action", "Login filtering disabled by " .. name .. "." )
 			return true, "Login filtering is disabled."
-                elseif param == "enable" then
+		elseif param == "enable" then
 			auth_filter.enable( )
 			minetest.log( "action", "Login filtering enabled by " .. name .. "." )
 			return true, "Login filtering is enabled."
-                elseif param == "reload" then
+		elseif param == "reload" then
 			auth_filter.refresh( )
 			return true, "Ruleset definition was loaded successfully."
 		else
 			return false, "Unknown parameter specified."
 		end
-        end
+	end
 } )
 
 auth_db.connect( )
