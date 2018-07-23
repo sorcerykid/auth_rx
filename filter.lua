@@ -73,7 +73,7 @@ function AuthFilter( path, name )
 		["age"] = { type = FILTER_TYPE_PERIOD, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return os.time( ) - a end },	-- FIXME: use global clock variable
 		["before"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a - b end },
 		["after"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a + b end },
-		["day"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_MOMENT }, def = function ( a, b ) return os.date( "%a" ) end },
+		["day"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return os.date( "%a", a ) end },
 		["at"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_STRING }, def = function ( a ) return localtime( a ) or 0 end },
 	}
 
@@ -184,11 +184,11 @@ function AuthFilter( path, name )
 			t = FILTER_TYPE_PATTERN
 			v = decode_base64( ref[ 1 ] )
 			v = "^" .. string.gsub( v, ".", sanitizer ) .. "$"
-		elseif find_token( "^(%d+)([ydhms])$" ) then
+		elseif find_token( "^(%d+)([ywdhms])$" ) then
 			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
 			t = FILTER_TYPE_PERIOD
 			v = tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
-		elseif find_token( "^([-+]%d+)([ydhms])$" ) then
+		elseif find_token( "^([-+]%d+)([ywdhms])$" ) then
 			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
 			local origin = string.byte( ref[ 1 ] ) == 45 and vars.clock.value or vars.epoch.value
 			t = FILTER_TYPE_MOMENT
