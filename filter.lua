@@ -34,6 +34,10 @@ local encode_base64 = minetest.encode_base64
 local trim = function ( str )
 	return string.sub( str, 2, -2 )
 end
+local localtime = function( str )
+	local x = { string.match( str, "^(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)Z$" ) }
+	return #x > 0 and os.time( { isdst = true, year = x[ 1 ], month = x[ 2 ], day = x[ 3 ], hour = x[ 4 ], min = x[ 5 ], sec = x[ 6 ] } ) or nil
+end
 
 ----------------------------
 -- AuthFilter class
@@ -69,6 +73,8 @@ function AuthFilter( path, name )
 		["age"] = { type = FILTER_TYPE_PERIOD, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return os.time( ) - a end },	-- FIXME: use global clock variable
 		["before"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a - b end },
 		["after"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a + b end },
+		["day"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_MOMENT }, def = function ( a, b ) return os.date( "%a" ) end },
+		["at"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_STRING }, def = function ( a ) return localtime( a ) or 0 end },
 	}
 
 	----------------------------
@@ -184,7 +190,7 @@ function AuthFilter( path, name )
 			v = tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
 		elseif find_token( "^([-+]%d+)([ydhms])$" ) then
 			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
-			local origin = string.byte( ref[ 1 ] ) == 45 and vars.clock.value or 0
+			local origin = string.byte( ref[ 1 ] ) == 45 and vars.clock.value or vars.epoch.value
 			t = FILTER_TYPE_MOMENT
 			v = origin + tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
 		elseif find_token( "^(%d?%d):(%d%d):(%d%d)$" ) or find_token( "^(%d?%d):(%d%d)$" ) then
@@ -261,6 +267,7 @@ function AuthFilter( path, name )
 				return "&" .. encode_base64( trim( str ) ) .. ";"
 			end )
 			-- skip comments (lines beginning with hash character) and blank lines
+			-- TODO: remove extraneous white space at beginning of lines
 			table.insert( src, string.byte( line ) ~= 35 and line or "" )
 		end
 		file:close( file )
@@ -275,7 +282,8 @@ function AuthFilter( path, name )
 		vars[ "true" ] = { type = FILTER_TYPE_BOOLEAN, value = true }
 		vars[ "false" ] = { type = FILTER_TYPE_BOOLEAN, value = false }
 		vars[ "clock" ] = { type = FILTER_TYPE_MOMENT, value = os.time( ) }
-		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = 0 }
+		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { isdst = true, year = 1970, month = 1, day = 1, hour = 0 } ) }
+		vars[ "y2k" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { isdst = true, year = 2000, month = 1, day = 1, hour = 0 } ) }
 
 		for num, line in ipairs( src ) do
 			local stmt = string.split( line, " ", false )
@@ -411,9 +419,6 @@ function AuthFilter( path, name )
 				if cond == FILTER_COND_FALSE then expr = not expr end
 
 				table.insert( rule.expr, expr )
-
-				-- TODO: immediately evaluating each expression (thus avoiding a list) would be optimal,
-				-- but probably requires state table; efficiency vs complexity scenario
 			else
 				return trace( "Invalid statement in ruleset", num )
 			end
