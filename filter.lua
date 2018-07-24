@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.7 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.8 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -34,9 +34,76 @@ local encode_base64 = minetest.encode_base64
 local trim = function ( str )
 	return string.sub( str, 2, -2 )
 end
-local localtime = function( str )
+local localtime = function ( str )
+	-- daylight saving time is factored in automatically
 	local x = { string.match( str, "^(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)Z$" ) }
-	return #x > 0 and os.time( { isdst = true, year = x[ 1 ], month = x[ 2 ], day = x[ 3 ], hour = x[ 4 ], min = x[ 5 ], sec = x[ 6 ] } ) or nil
+	return #x > 0 and os.time( { year = x[ 1 ], month = x[ 2 ], day = x[ 3 ], hour = x[ 4 ], min = x[ 5 ], sec = x[ 6 ] } ) or nil
+end
+local redate = function ( ts )
+	-- convert to standard time (for timespec and datespec comparisons)
+	local x = os.date( "*t", ts )
+	x.isdst = false		
+	return os.time( x )
+end
+
+----------------------------
+-- StringPattern class
+----------------------------
+
+function StringPattern( phrase, is_mode, tokens )
+	local glob = "^" .. string.gsub( phrase, ".", tokens ) .. "$"
+	return { compare = function ( value, type )
+		if not is_mode[ type ] then return end
+
+		return string.find( value, glob ) == 1
+	end }
+end
+
+----------------------------
+-- NumberPattern class
+----------------------------
+
+function NumberPattern( phrase, is_mode, tokens, parser )
+	local glob = { }
+	local ref
+	local find_token = function ( str, pat )
+		ref = { string.match( str, pat ) }
+		return #ref > 0
+	end
+	if #phrase ~= #tokens then
+		return nil
+	end
+	for i, v in ipairs( phrase ) do
+		local eval, args
+		local t = tokens[ i ]
+		if find_token( v, "^(" .. t .. ")$" ) then
+			eval = function ( a, b ) return a == b end
+			args = { tonumber( ref[ 1 ] ) }
+		elseif find_token( v, "^(" .. t .. ")%^(" .. t .. ")$" ) then
+			eval = function ( a, b, c ) return a >= b and a <= c end
+			args = { tonumber( ref[ 1 ] ), tonumber( ref[ 2 ] ) }
+		elseif find_token( v, "^(" .. t .. ")([<>])$" ) then
+			eval = ref[ 2 ] == "<" and
+				( function ( a, b ) return a <= b end ) or
+				( function ( a, b ) return a >= b end )
+			args = { tonumber( ref[ 1 ] ) }
+		elseif v == "?" then
+			eval = function ( ) return true end
+			args = { }
+		else
+			return nil
+		end
+		table.insert( glob, { eval = eval, args = args } )
+	end
+	return { compare = function ( value, type )
+		if not is_mode[ type ] then return end
+
+		local fields = parser( value, type )
+		for i, v in ipairs( glob ) do
+			if not v.eval( fields[ i ], unpack( v.args ) ) then return false end
+		end
+		return true
+	end }
 end
 
 ----------------------------
@@ -49,32 +116,31 @@ function AuthFilter( path, name )
 	local self = { }
 
 	local funcs = {
-		["add"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a + b end },
-		["sub"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a - b end },
-		["mul"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a * b end },
-		["div"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a / b end },
-		["neg"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return -a end },
-		["abs"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return math.abs( a ) end },
-		["max"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return math.max( a, b ) end },
-		["min"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b ) return math.min( a, b ) end },
-		["int"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( a ) return a < 0 and math.ceil( a ) or math.floor( a ) end },
-		["num"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_STRING }, def = function ( a ) return tonumber( a ) or 0 end },
-		["len"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.len( a ) end },
-		["lc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.lower( a ) end },
-		["uc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( a ) return string.upper( a ) end },
-		["range"] = { type = FILTER_TYPE_BOOLEAN, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( a, b, c ) return a >= b and a <= c end },
-		["trim"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( a, b ) return b > 0 and string.sub( a, 1, -b - 1 ) or string.sub( a, -b + 1 ) end },
-		["crop"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( a, b ) return b > 0 and string.sub( a, 1, b ) or string.sub( a, b, -1 ) end },
-		["size"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_SERIES }, def = function ( a ) return #a end },
-		["elem"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( a, b ) return a[ b ] or "" end },
-		["split"] = { type = FILTER_TYPE_SERIES, args = { FILTER_TYPE_STRING, FILTER_TYPE_STRING }, def = function ( a, b ) return string.split( a, b, true ) end },
-		["time"] = { type = FILTER_TYPE_TIMESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return a % 86400 end },
-		["date"] = { type = FILTER_TYPE_DATESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return math.floor( a / 86400 ) end },
-		["age"] = { type = FILTER_TYPE_PERIOD, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return os.time( ) - a end },	-- FIXME: use global clock variable
-		["before"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a - b end },
-		["after"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( a, b ) return a + b end },
-		["day"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_MOMENT }, def = function ( a ) return os.date( "%a", a ) end },
-		["at"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_STRING }, def = function ( a ) return localtime( a ) or 0 end },
+		["add"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a + b end },
+		["sub"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a - b end },
+		["mul"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a * b end },
+		["div"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a / b end },
+		["neg"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( v, a ) return -a end },
+		["abs"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( v, a ) return math.abs( a ) end },
+		["max"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return math.max( a, b ) end },
+		["min"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return math.min( a, b ) end },
+		["int"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER }, def = function ( v, a ) return a < 0 and math.ceil( a ) or math.floor( a ) end },
+		["num"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_STRING }, def = function ( v, a ) return tonumber( a ) or 0 end },
+		["len"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_STRING }, def = function ( v, a ) return string.len( a ) end },
+		["lc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( v, a ) return string.lower( a ) end },
+		["uc"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING }, def = function ( v, a ) return string.upper( a ) end },
+		["trim"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return b > 0 and string.sub( a, 1, -b - 1 ) or string.sub( a, -b + 1 ) end },
+		["crop"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return b > 0 and string.sub( a, 1, b ) or string.sub( a, b, -1 ) end },
+		["size"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_SERIES }, def = function ( v, a ) return #a end },
+		["elem"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a[ b ] or "" end },
+		["split"] = { type = FILTER_TYPE_SERIES, args = { FILTER_TYPE_STRING, FILTER_TYPE_STRING }, def = function ( v, a, b ) return string.split( a, b, true ) end },
+		["time"] = { type = FILTER_TYPE_TIMESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( v, a ) return redate( a - v.epoch.value ) % 86400 end },
+		["date"] = { type = FILTER_TYPE_DATESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( v, a ) return math.floor( redate( a - v.epoch.value ) / 86400 ) end },
+		["age"] = { type = FILTER_TYPE_PERIOD, args = { FILTER_TYPE_MOMENT }, def = function ( v, a ) return v.clock.value - a end },
+		["before"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( v, a, b ) return a - b end },
+		["after"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( v, a, b ) return a + b end },
+		["day"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_MOMENT }, def = function ( v, a ) return os.date( "%a", a ) end },
+		["at"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_STRING }, def = function ( v, a ) return localtime( a ) or 0 end },
 	}
 
 	----------------------------
@@ -125,7 +191,7 @@ function AuthFilter( path, name )
 				table.insert( params, oper.value )
 			end
 			t = funcs[ name ].type
-			v = funcs[ name ].def( unpack( params ) )
+			v = funcs[ name ].def( vars, unpack( params ) )
 		elseif find_token( "^&([A-Za-z0-9+/]*);$" ) then
 			t = FILTER_TYPE_SERIES
 			v = { }
@@ -159,31 +225,47 @@ function AuthFilter( path, name )
 			for line in file:lines( ) do
 				table.insert( v, line )
 			end
-		elseif find_token( "^/([a-zA-Z0-9+/]*);$" ) then
-			-- sanitize search phrase and convert to regexp pattern
-			local sanitizer =
-			{
-				["["] = "",
-				["]"] = "",
-				["^"] = "%^",
-				["$"] = "%$",
-				["("] = "%(",
-				[")"] = "%)",
-				["%"] = "%%",
-				["-"] = "%-",
-				[","] = "[a-z]",
-				[";"] = "[A-Z]",
-				["="] = "[-_]",
-				["!"] = "[a-zA-Z0-9]",
-				["*"] = "[a-zA-Z0-9_-]*",
-				["+"] = "[a-zA-Z0-9_-]+",
-				["?"] = "[a-zA-Z0-9_-]",
-				["#"] = "%d",
-				["&"] = "%a",
-			}
-			t = FILTER_TYPE_PATTERN
-			v = decode_base64( ref[ 1 ] )
-			v = "^" .. string.gsub( v, ".", sanitizer ) .. "$"
+                elseif find_token( "^/([a-zA-Z0-9+/]*),([tds]);$" ) then
+                        t = FILTER_TYPE_PATTERN
+                        local phrase = minetest.decode_base64( ref[ 1 ] )
+			if ref[ 2 ] == "s" then
+				v = StringPattern( phrase, { [FILTER_TYPE_STRING] = true }, {
+					["["] = "",
+					["]"] = "",
+					["^"] = "%^",
+					["$"] = "%$",
+					["("] = "%(",
+					[")"] = "%)",
+					["%"] = "%%",
+					["-"] = "%-",
+					[","] = "[a-z]",
+					[";"] = "[A-Z]",
+					["="] = "[-_]",
+					["!"] = "[a-zA-Z0-9]",
+					["*"] = "[a-zA-Z0-9_-]*",
+					["+"] = "[a-zA-Z0-9_-]+",
+					["?"] = "[a-zA-Z0-9_-]",
+					["#"] = "%d",
+					["&"] = "%a",
+				} )
+			elseif ref[ 2 ] == "t" then
+				phrase = string.split( phrase, ":", false )
+				v = NumberPattern( phrase, { [FILTER_TYPE_MOMENT] = true }, { "%d?%d", "%d%d", "%d%d" }, function ( value )
+					-- direct translation (accounts for daylight saving time and time-zone offset)
+					local timespec = os.date( "*t", value )
+					return { timespec.hour, timespec.min, timespec.sec }
+				end )
+			elseif ref[ 2 ] == "d" then
+				phrase = string.split( phrase, "-", false )
+				v = NumberPattern( phrase, { [FILTER_TYPE_MOMENT] = true }, { "%d%d", "%d%d", "%d%d%d%d" }, function ( value )
+					-- direct translation (accounts for daylight saving time and time-zone offset)
+					local datespec = os.date( "*t", value )	
+					return { datespec.day, datespec.month, datespec.year }
+				end )
+			end
+			if not v then
+				return nil
+			end
 		elseif find_token( "^(%d+)([ywdhms])$" ) then
 			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
 			t = FILTER_TYPE_PERIOD
@@ -195,16 +277,16 @@ function AuthFilter( path, name )
 			v = origin + tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
 		elseif find_token( "^(%d?%d):(%d%d):(%d%d)$" ) or find_token( "^(%d?%d):(%d%d)$" ) then
 			local timespec = {
-				isdst = true, day = 1, month = 1, year = 1970, hour = tonumber( ref[ 1 ] ), min = tonumber( ref[ 2 ] ), sec = ref[ 3 ] and tonumber( ref[ 3 ] ) or 0,
+				isdst = false, day = 1, month = 1, year = 1970, hour = tonumber( ref[ 1 ] ), min = tonumber( ref[ 2 ] ), sec = ref[ 3 ] and tonumber( ref[ 3 ] ) or 0,
 			}
 			t = FILTER_TYPE_TIMESPEC
-			v = os.time( timespec )
+			v = ( os.time( timespec ) - vars.epoch.value ) % 86400			-- strip date component and time-zone offset (standardize time and account for overflow too)
 		elseif find_token( "^(%d%d)%-(%d%d)%-(%d%d%d%d)$" ) then
 			local datespec = {
-				isdst = true, day = tonumber( ref[ 1 ] ), month = tonumber( ref[ 2 ] ), year = tonumber( ref[ 3 ] ), hour = 0,
+				isdst = false, day = tonumber( ref[ 1 ] ), month = tonumber( ref[ 2 ] ), year = tonumber( ref[ 3 ] ), hour = 0,
 			}
 			t = FILTER_TYPE_DATESPEC
-			v = math.floor( os.time( datespec ) / 86400 )
+			v = math.floor( ( os.time( datespec ) - vars.epoch.value ) / 86400 )	-- strip time component and time-zone offset (standardize time too)
 		elseif find_token( "^'([a-zA-Z0-9+/]*);$" ) then
 			t = FILTER_TYPE_STRING
 			v = decode_base64( ref[ 1 ] )
@@ -260,8 +342,8 @@ function AuthFilter( path, name )
 			line = string.gsub( line, "'(.-)'", function ( str )
 				return "'" .. encode_base64( str ) .. ";"
 			end )
-			line = string.gsub( line, "/(.-)/", function ( str )
-				return "/" .. encode_base64( str ) .. ";"
+			line = string.gsub( line, "/(.-)/([tds]?)", function ( a, b )
+				return "/" .. encode_base64( a ) .. "," .. ( b == "" and "s" or b ) .. ";"
 			end )
 			line = string.gsub( line, "%b()", function ( str )
 				return "&" .. encode_base64( trim( str ) ) .. ";"
@@ -282,8 +364,8 @@ function AuthFilter( path, name )
 		vars[ "true" ] = { type = FILTER_TYPE_BOOLEAN, value = true }
 		vars[ "false" ] = { type = FILTER_TYPE_BOOLEAN, value = false }
 		vars[ "clock" ] = { type = FILTER_TYPE_MOMENT, value = os.time( ) }
-		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { isdst = true, year = 1970, month = 1, day = 1, hour = 0 } ) }
-		vars[ "y2k" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { isdst = true, year = 2000, month = 1, day = 1, hour = 0 } ) }
+		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { year = 1970, month = 1, day = 1, hour = 0 } ) }
+		vars[ "y2k" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { year = 2000, month = 1, day = 1, hour = 0 } ) }
 
 		for num, line in ipairs( src ) do
 			local stmt = string.split( line, " ", false )
@@ -368,7 +450,8 @@ function AuthFilter( path, name )
 					elseif comp == FILTER_COMP_IS and type2 == FILTER_TYPE_STRING then
 						expr = ( string.upper( value1 ) == value2 )
 					elseif comp == FILTER_COMP_IS and type2 == FILTER_TYPE_PATTERN then
-						expr = ( string.find( value1, value2 ) == 1 )
+						expr = value2.compare( value1, FILTER_TYPE_STRING )
+						if expr == nil then return trace( "Ambiguous pattern mode in ruleset", num ) end
 					else
 						return trace( "Mismatched operands in ruleset", num )
 					end
@@ -396,7 +479,7 @@ function AuthFilter( path, name )
 				end
 
 				-- only allow comparisons of appropriate and equivalent datatypes
-				local do_math = { [FILTER_TYPE_STRING] = false, [FILTER_TYPE_NUMBER] = true, [FILTER_TYPE_PERIOD] = true, [FILTER_TYPE_MOMENT] = true, [FILTER_TYPE_DATESPEC] = true, [FILTER_TYPE_TIMESPEC] = true }
+				local do_math = { [FILTER_TYPE_NUMBER] = true, [FILTER_TYPE_PERIOD] = true, [FILTER_TYPE_MOMENT] = true, [FILTER_TYPE_DATESPEC] = true, [FILTER_TYPE_TIMESPEC] = true }
 
 				local expr
 				if comp == FILTER_COMP_EQ and oper1.type == oper2.type and oper1.type ~= FILTER_TYPE_SERIES and oper1.type ~= FILTER_TYPE_PATTERN then
@@ -411,8 +494,9 @@ function AuthFilter( path, name )
 					expr = ( oper1.value <= oper2.value )
 				elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_STRING then
 					expr = ( string.upper( oper1.value ) == string.upper( oper2.value ) )
-				elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_PATTERN then
-					expr = ( string.find( oper1.value, oper2.value ) == 1 )
+				elseif comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_PATTERN then
+					expr = oper2.value.compare( oper1.value, oper1.type )
+					if expr == nil then return trace( "Ambiguous pattern mode in ruleset", num ) end
 				else
 					return trace( "Mismatched operands in ruleset", num )
 				end
