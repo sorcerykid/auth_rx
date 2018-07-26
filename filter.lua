@@ -1,12 +1,13 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.8 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.9 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
 --------------------------------------------------------
 
-FILTER_TYPE_STRING = 11
-FILTER_TYPE_NUMBER = 12
+FILTER_TYPE_STRING = 10
+FILTER_TYPE_NUMBER = 11
+FILTER_TYPE_ADDRESS = 12
 FILTER_TYPE_BOOLEAN = 13
 FILTER_TYPE_PATTERN = 14
 FILTER_TYPE_SERIES = 15
@@ -44,6 +45,9 @@ local redate = function ( ts )
 	local x = os.date( "*t", ts )
 	x.isdst = false		
 	return os.time( x )
+end
+local unpack_address = function ( addr )
+	return { math.floor( addr / 16777216 ), math.floor( ( addr % 16777216 ) / 65536 ), math.floor( ( addr % 65536 ) / 256 ), addr % 256 }
 end
 
 ----------------------------
@@ -132,7 +136,7 @@ function AuthFilter( path, name )
 		["trim"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return b > 0 and string.sub( a, 1, -b - 1 ) or string.sub( a, -b + 1 ) end },
 		["crop"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_STRING, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return b > 0 and string.sub( a, 1, b ) or string.sub( a, b, -1 ) end },
 		["size"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_SERIES }, def = function ( v, a ) return #a end },
-		["elem"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a[ b ] or "" end },
+		["elem"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a[ b > 0 and b or #a + b + 1 ] or "" end },
 		["split"] = { type = FILTER_TYPE_SERIES, args = { FILTER_TYPE_STRING, FILTER_TYPE_STRING }, def = function ( v, a, b ) return string.split( a, b, true ) end },
 		["time"] = { type = FILTER_TYPE_TIMESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( v, a ) return redate( a - v.epoch.value ) % 86400 end },
 		["date"] = { type = FILTER_TYPE_DATESPEC, args = { FILTER_TYPE_MOMENT }, def = function ( v, a ) return math.floor( redate( a - v.epoch.value ) / 86400 ) end },
@@ -141,6 +145,9 @@ function AuthFilter( path, name )
 		["after"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_MOMENT, FILTER_TYPE_PERIOD }, def = function ( v, a, b ) return a + b end },
 		["day"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_MOMENT }, def = function ( v, a ) return os.date( "%a", a ) end },
 		["at"] = { type = FILTER_TYPE_MOMENT, args = { FILTER_TYPE_STRING }, def = function ( v, a ) return localtime( a ) or 0 end },
+		["ip"] = { type = FILTER_TYPE_STRING, args = { FILTER_TYPE_ADDRESS }, def = function ( v, a ) return table.concat( unpack_address( a ), "." ) end },
+		["count"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_SERIES, FILTER_TYPE_STRING }, def = function ( v, a, b ) local t = 0; for i, v in ipairs( a ) do if v == b then t = t + 1; end; end; return t end },
+		["clip"] = { type = FILTER_TYPE_SERIES, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) local x = { }; local s = b < 0 and #a + b + 1 or 0; for i = 0, math.abs( b ) do table.insert( x, a[ s + i ] ); end; return x; end },
 	}
 
 	----------------------------
@@ -210,7 +217,7 @@ function AuthFilter( path, name )
 			end
 		elseif find_token( "^%$([a-zA-Z0-9_]+)$" ) then
 			local name = ref[ 1 ]
-			if not vars[ name ] then
+			if not vars[ name ] or vars[ name ].value == nil then
 				return nil
 			end
 			t = vars[ name ].type
@@ -225,7 +232,7 @@ function AuthFilter( path, name )
 			for line in file:lines( ) do
 				table.insert( v, line )
 			end
-                elseif find_token( "^/([a-zA-Z0-9+/]*),([tds]);$" ) then
+                elseif find_token( "^/([a-zA-Z0-9+/]*),([stda]);$" ) then
                         t = FILTER_TYPE_PATTERN
                         local phrase = minetest.decode_base64( ref[ 1 ] )
 			if ref[ 2 ] == "s" then
@@ -261,6 +268,11 @@ function AuthFilter( path, name )
 					-- direct translation (accounts for daylight saving time and time-zone offset)
 					local datespec = os.date( "*t", value )	
 					return { datespec.day, datespec.month, datespec.year }
+				end )
+			elseif ref[ 2 ] == "a" then
+				phrase = string.split( phrase, ".", false )
+				v = NumberPattern( phrase, { [FILTER_TYPE_ADDRESS] = true }, { "%d?%d?%d", "%d?%d?%d", "%d?%d?%d", "%d?%d?%d" }, function ( value )
+					return unpack_address( value )
 				end )
 			end
 			if not v then
@@ -298,7 +310,10 @@ function AuthFilter( path, name )
 			end )
 		elseif find_token( "^-?%d+$" ) or find_token( "^-?%d*%.%d+$" ) then
 			t = FILTER_TYPE_NUMBER
-			v = tonumber( token )
+			v = tonumber( ref[ 1 ] )
+		elseif find_token( "^(%d+)%.(%d+)%.(%d+)%.(%d+)$" ) then
+			t = FILTER_TYPE_ADDRESS
+			v = tonumber( ref[ 1 ] ) * 16777216 + tonumber( ref[ 2 ] ) * 65536 + tonumber( ref[ 3 ] ) * 256 + tonumber( ref[ 4 ] )
 		else
 			return nil
 		end
@@ -329,7 +344,7 @@ function AuthFilter( path, name )
 	----------------------------
 
 	self.refresh = function ( )
-		local file = io.open( path .. "/" .. name, "rb" )
+		local file = io.open( path .. "/" .. name, "r" )
 		if not file then
 			error( "The specified ruleset file does not exist." )
 		end
@@ -342,7 +357,7 @@ function AuthFilter( path, name )
 			line = string.gsub( line, "'(.-)'", function ( str )
 				return "'" .. encode_base64( str ) .. ";"
 			end )
-			line = string.gsub( line, "/(.-)/([tds]?)", function ( a, b )
+			line = string.gsub( line, "/(.-)/([stda]?)", function ( a, b )
 				return "/" .. encode_base64( a ) .. "," .. ( b == "" and "s" or b ) .. ";"
 			end )
 			line = string.gsub( line, "%b()", function ( str )
@@ -374,11 +389,8 @@ function AuthFilter( path, name )
 				-- skip no-op statements
 
 			elseif stmt[ 1 ] == "continue" then
+				if not rule then return trace( "Unexpected 'continue' statement in ruleset", num ) end
 				if #stmt ~= 1 then return trace( "Invalid 'continue' statement in ruleset", num ) end
-
-				if rule == nil then
-					return trace( "No ruleset declared", num )
-				end
 
 				if evaluate( rule ) then
 					return ( rule.mode == FILTER_MODE_FAIL and note or nil )
@@ -398,7 +410,7 @@ function AuthFilter( path, name )
 				note = oper.value
 
 			elseif stmt[ 1 ] == "pass" or stmt[ 1 ] == "fail" then
-				if rule then return trace( "Missing continue statement in ruleset", num ) end
+				if rule then return trace( "Missing 'continue' statement in ruleset", num ) end
 				if #stmt ~= 2 then return trace( "Invalid 'pass' or 'fail' statement in ruleset", num ) end
 
 				rule = { }
@@ -419,6 +431,7 @@ function AuthFilter( path, name )
 				rule.expr = { }
 
 			elseif stmt[ 1 ] == "when" or stmt[ 1 ] == "until" then
+				if not rule then return trace( "Unexpected 'when' or 'until' statement in ruleset", num ) end
 				if #stmt ~= 4 then return trace( "Invalid 'when' or 'until' statement in ruleset", num ) end
 
 				local cond = ( { ["when"] = FILTER_COND_TRUE, ["until"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
@@ -462,6 +475,7 @@ function AuthFilter( path, name )
 				table.insert( rule.expr, expr )
 
 			elseif stmt[ 1 ] == "if" or stmt[ 1 ] == "unless" then
+				if not rule then return trace( "Unexpected 'if' or 'unless' statement in ruleset", num ) end
 				if #stmt ~= 4 then return trace( "Invalid 'if' or 'unless' statement in ruleset", num ) end
 
 				local cond = ( { ["if"] = FILTER_COND_TRUE, ["unless"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]

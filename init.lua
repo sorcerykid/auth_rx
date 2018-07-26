@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.7 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.9 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -7,6 +7,7 @@
 
 dofile( minetest.get_modpath( "auth_rx" ) .. "/filter.lua" )
 dofile( minetest.get_modpath( "auth_rx" ) .. "/db.lua" )
+dofile( minetest.get_modpath( "auth_rx" ) .. "/watchdog.lua" )
 
 -----------------------------------------------------
 -- Registered Authentication Handler
@@ -14,6 +15,7 @@ dofile( minetest.get_modpath( "auth_rx" ) .. "/db.lua" )
 
 local auth_filter = AuthFilter( minetest.get_worldpath( ), "greenlist.mt" )
 local auth_db = AuthDatabase( minetest.get_worldpath( ), "auth.db" )
+local auth_watchdog = AuthWatchdog( )
 
 local get_minetest_config = core.setting_get	-- backwards compatibility
 
@@ -41,14 +43,21 @@ function pack_privileges( privileges )
 	return assigned_privs
 end
 
+function convert_ipv4( str )
+	local ref = string.split( str, ".", false )
+	return tonumber( ref[ 1 ] ) * 16777216 + tonumber( ref[ 2 ] ) * 65536 + tonumber( ref[ 3 ] ) * 256 + tonumber( ref[ 4 ] )
+end
+
 if minetest.register_on_auth_fail then
 	minetest.register_on_auth_fail( function ( player_name, player_ip )
 		auth_db.on_login_failure( player_name, player_ip )
+		auth_watchdog.on_failure( convert_ipv4( player_ip ) )
 	end )
 end
 
 minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 	local rec = auth_db.select_record( player_name )
+	local res = auth_watchdog.get_metadata( convert_ipv4( player_ip ) )
 
 	if rec then
 		auth_db.on_login_attempt( player_name, player_ip )
@@ -56,7 +65,7 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		-- prevent creation of case-insensitive duplicate accounts
 		local uname = string.lower( player_name )
 		for cname in auth_db.records( ) do
-		if string.lower( cname ) == uname then
+			if string.lower( cname ) == uname then
 				return string.format( "A player named %s already exists on this server.", cname )
 			end
 		end
@@ -64,7 +73,7 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 
 	local filter_err = auth_filter.process( {
 		name = { type = FILTER_TYPE_STRING, value = player_name },
-		addr = { type = FILTER_TYPE_STRING, value = player_ip },
+		addr = { type = FILTER_TYPE_ADDRESS, value = convert_ipv4( player_ip ) },
 		is_new = { type = FILTER_TYPE_BOOLEAN, value = rec == nil },
 		privs_list = { type = FILTER_TYPE_SERIES, value = rec and rec.assigned_privs or { } },
 		users_list = { type = FILTER_TYPE_SERIES, value = auth_db.search( true ) },
@@ -77,7 +86,15 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		uptime = { type = FILTER_TYPE_PERIOD, value = minetest.get_server_uptime( ) },
 		oldlogin = { type = FILTER_TYPE_MOMENT, value = rec and rec.oldlogin or 0 },
 		newlogin = { type = FILTER_TYPE_MOMENT, value = rec and rec.newlogin or 0 },
+		ip_names_list = { type = FILTER_TYPE_SERIES, value = res.previous_names or { } },
+		ip_prelogin = { type = FILTER_TYPE_MOMENT, value = res.prelogin or 0 },
+		ip_oldcheck = { type = FILTER_TYPE_MOMENT, value = res.oldcheck or 0 },
+		ip_newcheck = { type = FILTER_TYPE_MOMENT, value = res.newcheck or 0 },
+		ip_failures = { type = FILTER_TYPE_NUMBER, value = res.count_failures or 0 },
+		ip_attempts = { type = FILTER_TYPE_NUMBER, value = res.count_attempts or 0 }
 	} )
+
+	auth_watchdog.on_attempt( convert_ipv4( player_ip ), player_name )
 
 	return filter_err 
 end )
@@ -86,6 +103,10 @@ minetest.register_on_joinplayer( function ( player )
 	local player_name = player:get_player_name( )
 	auth_db.on_login_success( player_name, "0.0.0.0" )
 	auth_db.on_session_opened( player_name )
+	minetest.after( 0.0, function ( )
+		-- hack since player status not immediately available on some MT versions
+		auth_watchdog.on_success( convert_ipv4( minetest.get_player_information( player_name ).address ) )
+	end )
 end )
 
 minetest.register_on_leaveplayer( function ( player )

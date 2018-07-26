@@ -1,4 +1,4 @@
-Auth Redux Mod v2.8b
+Auth Redux Mod v2.9b
 By Leslie Krause
 
 Auth Redux is a drop-in replacement for the builtin authentication handler of Minetest.
@@ -87,6 +87,13 @@ Version 2.8b (24-Jul-2018)
   - removed daylight saving time from preset variables
   - updated comparison algorithm in ruleset parser
   - passed preset variables array to filter functions
+
+Version 2.9b (26-Jul-2018)
+  - implemented address datatype for rulesets
+  - added more helper functions for use by rulesets
+  - fixed missing syntax checks in ruleset parser
+  - developed and integrated AuthWatchdog class
+  - added meta-variables for stateful login filtering
 
 Installation
 ----------------------
