@@ -1,13 +1,15 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.9 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.10 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
 --------------------------------------------------------
 
+dofile( minetest.get_modpath( "auth_rx" ) .. "/helpers.lua" )
 dofile( minetest.get_modpath( "auth_rx" ) .. "/filter.lua" )
 dofile( minetest.get_modpath( "auth_rx" ) .. "/db.lua" )
 dofile( minetest.get_modpath( "auth_rx" ) .. "/watchdog.lua" )
+local __commands = dofile( minetest.get_modpath( "auth_rx" ) .. "/commands.lua" )
 
 -----------------------------------------------------
 -- Registered Authentication Handler
@@ -16,37 +18,6 @@ dofile( minetest.get_modpath( "auth_rx" ) .. "/watchdog.lua" )
 local auth_filter = AuthFilter( minetest.get_worldpath( ), "greenlist.mt" )
 local auth_db = AuthDatabase( minetest.get_worldpath( ), "auth.db" )
 local auth_watchdog = AuthWatchdog( )
-
-local get_minetest_config = core.setting_get	-- backwards compatibility
-
-function get_default_privs( )
-	local default_privs = { }
-	for _, p in pairs( string.split( get_minetest_config( "default_privs" ), "," ) ) do
-		table.insert( default_privs, string.trim( p ) )
-	end
-	return default_privs
-end
-
-function unpack_privileges( assigned_privs )
-	local privileges = { }
-	for _, p in ipairs( assigned_privs ) do
-		privileges[ p ] = true
-	end
-	return privileges
-end
-
-function pack_privileges( privileges )
-	local assigned_privs = { }
-	for p, _ in pairs( privileges ) do
-		table.insert( assigned_privs, p )
-	end
-	return assigned_privs
-end
-
-function convert_ipv4( str )
-	local ref = string.split( str, ".", false )
-	return tonumber( ref[ 1 ] ) * 16777216 + tonumber( ref[ 2 ] ) * 65536 + tonumber( ref[ 3 ] ) * 256 + tonumber( ref[ 4 ] )
-end
 
 if minetest.register_on_auth_fail then
 	minetest.register_on_auth_fail( function ( player_name, player_ip )
@@ -57,7 +28,7 @@ end
 
 minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 	local rec = auth_db.select_record( player_name )
-	local res = auth_watchdog.get_metadata( convert_ipv4( player_ip ) )
+	local meta = auth_watchdog.get_metadata( convert_ipv4( player_ip ) )
 
 	if rec then
 		auth_db.on_login_attempt( player_name, player_ip )
@@ -71,7 +42,7 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		end
 	end
 
-	local filter_err = auth_filter.process( {
+	local num, res = auth_filter.process( {
 		name = { type = FILTER_TYPE_STRING, value = player_name },
 		addr = { type = FILTER_TYPE_ADDRESS, value = convert_ipv4( player_ip ) },
 		is_new = { type = FILTER_TYPE_BOOLEAN, value = rec == nil },
@@ -79,6 +50,7 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		users_list = { type = FILTER_TYPE_SERIES, value = auth_db.search( true ) },
 		cur_users = { type = FILTER_TYPE_NUMBER, value = #auth_db.search( true ) },
 		max_users = { type = FILTER_TYPE_NUMBER, value = get_minetest_config( "max_users" ) },
+		lifetime = { type = FILTER_TYPE_PERIOD, value = rec and rec.lifetime or 0 },
 		sessions = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_sessions or 0 },
 		failures = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_failures or 0 },
 		attempts = { type = FILTER_TYPE_NUMBER, value = rec and rec.total_attempts or 0 },
@@ -86,17 +58,17 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		uptime = { type = FILTER_TYPE_PERIOD, value = minetest.get_server_uptime( ) },
 		oldlogin = { type = FILTER_TYPE_MOMENT, value = rec and rec.oldlogin or 0 },
 		newlogin = { type = FILTER_TYPE_MOMENT, value = rec and rec.newlogin or 0 },
-		ip_names_list = { type = FILTER_TYPE_SERIES, value = res.previous_names or { } },
-		ip_prelogin = { type = FILTER_TYPE_MOMENT, value = res.prelogin or 0 },
-		ip_oldcheck = { type = FILTER_TYPE_MOMENT, value = res.oldcheck or 0 },
-		ip_newcheck = { type = FILTER_TYPE_MOMENT, value = res.newcheck or 0 },
-		ip_failures = { type = FILTER_TYPE_NUMBER, value = res.count_failures or 0 },
-		ip_attempts = { type = FILTER_TYPE_NUMBER, value = res.count_attempts or 0 }
+		ip_names_list = { type = FILTER_TYPE_SERIES, value = meta.previous_names or { } },
+		ip_prelogin = { type = FILTER_TYPE_MOMENT, value = meta.prelogin or 0 },
+		ip_oldcheck = { type = FILTER_TYPE_MOMENT, value = meta.oldcheck or 0 },
+		ip_newcheck = { type = FILTER_TYPE_MOMENT, value = meta.newcheck or 0 },
+		ip_failures = { type = FILTER_TYPE_NUMBER, value = meta.count_failures or 0 },
+		ip_attempts = { type = FILTER_TYPE_NUMBER, value = meta.count_attempts or 0 }
 	} )
 
 	auth_watchdog.on_attempt( convert_ipv4( player_ip ), player_name )
 
-	return filter_err 
+	return res 
 end )
 
 minetest.register_on_joinplayer( function ( player )
@@ -166,27 +138,6 @@ minetest.register_authentication_handler( {
 	iterate = auth_db.records
 } )
 
-minetest.register_chatcommand( "filter", {
-	description = "Enable or disable ruleset-based login filtering, or reload a ruleset definition.",
-	privs = { server = true },
-	func = function( name, param )
-		if param == "" then
-		return true, "Login filtering is currently " .. ( auth_filter.is_active( ) and "enabled" or "disabled" ) .. "."
-		elseif param == "disable" then
-			auth_filter.disable( )
-			minetest.log( "action", "Login filtering disabled by " .. name .. "." )
-			return true, "Login filtering is disabled."
-		elseif param == "enable" then
-			auth_filter.enable( )
-			minetest.log( "action", "Login filtering enabled by " .. name .. "." )
-			return true, "Login filtering is enabled."
-		elseif param == "reload" then
-			auth_filter.refresh( )
-			return true, "Ruleset definition was loaded successfully."
-		else
-			return false, "Unknown parameter specified."
-		end
-	end
-} )
-
 auth_db.connect( )
+
+__commands( { auth_db = auth_db, auth_filter = auth_filter } )

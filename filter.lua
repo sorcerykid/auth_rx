@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.9 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.10 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -45,9 +45,6 @@ local redate = function ( ts )
 	local x = os.date( "*t", ts )
 	x.isdst = false		
 	return os.time( x )
-end
-local unpack_address = function ( addr )
-	return { math.floor( addr / 16777216 ), math.floor( ( addr % 16777216 ) / 65536 ), math.floor( ( addr % 65536 ) / 256 ), addr % 256 }
 end
 
 ----------------------------
@@ -114,9 +111,9 @@ end
 -- AuthFilter class
 ----------------------------
 
-function AuthFilter( path, name )
+function AuthFilter( path, name, debug )
 	local src
-	local opt = { is_debug = false, is_strict = true, is_active = true }
+	local is_active = true
 	local self = { }
 
 	local funcs = {
@@ -154,15 +151,14 @@ function AuthFilter( path, name )
 	-- private methods
 	----------------------------
 
-	local get_operand, trace, evaluate
+	local trace, get_operand, evaluate, tokenize
 
-	trace = function ( msg, num )
-		-- TODO: Use 'pcall' for more graceful exception handling?
+	trace = debug or function ( msg, num )
 		minetest.log( "error", string.format( "%s (%s/%s, line %d)", msg, path, name, num ) )
-		return "The server encountered an internal error."
+		return num, "The server encountered an internal error."
 	end
 
-	get_operand = function ( token, vars )
+	function get_operand( token, vars )
 		local t, v, ref
 
 		local find_token = function ( pat )
@@ -320,7 +316,7 @@ function AuthFilter( path, name )
 		return { type = t, value = v }
 	end
 
-	evaluate = function ( rule )
+	function evaluate( rule )
 		-- short circuit binary logic to simplify evaluation
 		local res = ( rule.bool == FILTER_BOOL_AND )
 		local xor = 0
@@ -339,9 +335,30 @@ function AuthFilter( path, name )
 		return res
 	end
 
+	function tokenize( line )
+		-- encode string and pattern literals and function arguments to simplify parsing (order IS significant)
+		line = string.gsub( line, "\"(.-)\"", function ( str )
+			return "\"" .. encode_base64( str ) .. ";"
+		end )
+		line = string.gsub( line, "'(.-)'", function ( str )
+			return "'" .. encode_base64( str ) .. ";"
+		end )
+		line = string.gsub( line, "/(.-)/([stda]?)", function ( a, b )
+			return "/" .. encode_base64( a ) .. "," .. ( b == "" and "s" or b ) .. ";"
+		end )
+		line = string.gsub( line, "%b()", function ( str )
+			return "&" .. encode_base64( trim( str ) ) .. ";"
+		end )
+		return line
+	end
+
 	----------------------------
 	-- public methods
 	----------------------------
+
+	self.translate = function ( field, vars )
+		return get_operand( tokenize( field ), vars )
+	end
 
 	self.refresh = function ( )
 		local file = io.open( path .. "/" .. name, "r" )
@@ -350,37 +367,30 @@ function AuthFilter( path, name )
 		end
 		src = { }
 		for line in file:lines( ) do
-			-- encode string and pattern literals and function arguments to simplify parsing
-			line = string.gsub( line, "\"(.-)\"", function ( str )
-				return "\"" .. encode_base64( str ) .. ";"
-			end )
-			line = string.gsub( line, "'(.-)'", function ( str )
-				return "'" .. encode_base64( str ) .. ";"
-			end )
-			line = string.gsub( line, "/(.-)/([stda]?)", function ( a, b )
-				return "/" .. encode_base64( a ) .. "," .. ( b == "" and "s" or b ) .. ";"
-			end )
-			line = string.gsub( line, "%b()", function ( str )
-				return "&" .. encode_base64( trim( str ) ) .. ";"
-			end )
 			-- skip comments (lines beginning with hash character) and blank lines
 			-- TODO: remove extraneous white space at beginning of lines
-			table.insert( src, string.byte( line ) ~= 35 and line or "" )
+			table.insert( src, string.byte( line ) ~= 35 and tokenize( line ) or "" )
 		end
 		file:close( file )
+	end
+
+	self.add_preset_vars = function ( vars )
+		vars[ "clock" ] = { type = FILTER_TYPE_MOMENT, value = os.time( ) }
+		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { year = 1970, month = 1, day = 1, hour = 0 } ) }
+		vars[ "true" ] = { type = FILTER_TYPE_BOOLEAN, value = true }
+		vars[ "false" ] = { type = FILTER_TYPE_BOOLEAN, value = false }
 	end
 
 	self.process = function( vars )
 		local rule
 		local note = "Access denied."
 
-		if not opt.is_active then return end
+		if not is_active then return end
 
-		vars[ "true" ] = { type = FILTER_TYPE_BOOLEAN, value = true }
-		vars[ "false" ] = { type = FILTER_TYPE_BOOLEAN, value = false }
-		vars[ "clock" ] = { type = FILTER_TYPE_MOMENT, value = os.time( ) }
-		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { year = 1970, month = 1, day = 1, hour = 0 } ) }
-		vars[ "y2k" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { year = 2000, month = 1, day = 1, hour = 0 } ) }
+		if not debug then
+			-- allow overriding preset vars when debugger is active
+			self.add_preset_vars( vars )
+		end
 
 		for num, line in ipairs( src ) do
 			local stmt = string.split( line, " ", false )
@@ -393,7 +403,7 @@ function AuthFilter( path, name )
 				if #stmt ~= 1 then return trace( "Invalid 'continue' statement in ruleset", num ) end
 
 				if evaluate( rule ) then
-					return ( rule.mode == FILTER_MODE_FAIL and note or nil )
+					return num, ( rule.mode == FILTER_MODE_FAIL and note or nil )
 				end
 
 				rule = nil
@@ -423,7 +433,7 @@ function AuthFilter( path, name )
 				end
 
 				if bool == FILTER_BOOL_NOW then
-					return ( mode == FILTER_MODE_FAIL and note or nil )
+					return num, ( mode == FILTER_MODE_FAIL and note or nil )
 				end
 
 				rule.mode = mode
@@ -525,15 +535,15 @@ function AuthFilter( path, name )
 	end
 
 	self.enable = function ( )
-		opt.is_active = true
+		is_active = true
 	end
 
 	self.disable = function ( )
-		opt.is_active = false
+		is_active = false
 	end
 
 	self.is_active = function ( )
-		return opt.is_active
+		return is_active
 	end
 
 	self.refresh( )
