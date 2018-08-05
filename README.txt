@@ -1,10 +1,10 @@
-Auth Redux Mod v2.10b
+Auth Redux Mod v2.11
 By Leslie Krause
 
 Auth Redux is a drop-in replacement for the builtin authentication handler of Minetest.
 It is designed from the ground up to be robust and secure enough for use on high-traffic
 Minetest servers, while also addressing a number of outstanding bugs (including #5334 
-and #6783 and #4451).
+and #6783 and #4451) in the Minetest 0.4.x engine.
 
 Auth Redux is intended to be compatible with all versions of Minetest 0.4.14+.
 
@@ -103,6 +103,9 @@ Version 2.10b (29-Jul-2018)
   - allowed for overriding preset variables by debugger
   - included line-number in results of login filter
   - added missing preset variable needed by rulesets
+
+Version 2.11 (04-Aug-2018)
+  - included a command-line player analytics script
 
 Installation
 ----------------------
