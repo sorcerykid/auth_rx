@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.10 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.12 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -28,7 +28,9 @@ FILTER_COMP_GT = 51
 FILTER_COMP_GTE = 52
 FILTER_COMP_LT = 53
 FILTER_COMP_LTE = 54
-FILTER_COMP_IS = 55
+FILTER_COMP_IN = 55
+FILTER_COMP_IS = 56
+FILTER_COMP_HAS = 57
 
 local decode_base64 = minetest.decode_base64
 local encode_base64 = minetest.encode_base64
@@ -151,7 +153,7 @@ function AuthFilter( path, name, debug )
 	-- private methods
 	----------------------------
 
-	local trace, get_operand, evaluate, tokenize
+	local trace, get_operand, get_result, evaluate, tokenize
 
 	trace = debug or function ( msg, num )
 		minetest.log( "error", string.format( "%s (%s/%s, line %d)", msg, path, name, num ) )
@@ -316,6 +318,56 @@ function AuthFilter( path, name, debug )
 		return { type = t, value = v }
 	end
 
+	function get_result( cond, comp, oper1, oper2 )
+		-- only allow comparisons of appropriate and equivalent datatypes
+		local do_math = { [FILTER_TYPE_NUMBER] = true, [FILTER_TYPE_PERIOD] = true, [FILTER_TYPE_MOMENT] = true, [FILTER_TYPE_DATESPEC] = true, [FILTER_TYPE_TIMESPEC] = true }
+		local expr
+
+		if comp == FILTER_COMP_EQ and oper1.type == oper2.type and oper1.type ~= FILTER_TYPE_SERIES and oper1.type ~= FILTER_TYPE_PATTERN then
+			expr = ( oper1.value == oper2.value )
+		elseif comp == FILTER_COMP_GT and oper1.type == oper2.type and do_math[ oper2.type ] then
+			expr = ( oper1.value > oper2.value )
+		elseif comp == FILTER_COMP_GTE and oper1.type == oper2.type and do_math[ oper2.type ] then
+			expr = ( oper1.value >= oper2.value )
+		elseif comp == FILTER_COMP_LT and oper1.type == oper2.type and do_math[ oper2.type ] then
+			expr = ( oper1.value < oper2.value )
+		elseif comp == FILTER_COMP_LTE and oper1.type == oper2.type and do_math[ oper2.type ] then
+			expr = ( oper1.value <= oper2.value )
+		elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_STRING then
+			expr = ( string.upper( oper1.value ) == string.upper( oper2.value ) )
+		elseif comp == FILTER_COMP_IN and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_SERIES then
+			local value1 = oper1.value
+			expr = false
+			for i, value2 in ipairs( oper2.value ) do
+				expr = ( value1 == value2 )
+				if expr then break end
+			end
+		elseif comp == FILTER_COMP_HAS and oper1.type == FILTER_TYPE_SERIES and oper2.type == FILTER_TYPE_STRING then
+			local value2 = string.upper( oper2.value )
+			expr = false
+			for i, value1 in ipairs( oper1.value ) do
+				expr = ( string.upper( value1 ) == value2 )
+				if expr then break end
+			end
+		elseif comp == FILTER_COMP_HAS and oper1.type == FILTER_TYPE_SERIES and oper2.type == FILTER_TYPE_PATTERN then
+			local compare = oper2.value.compare
+			expr = false
+			for i, value1 in ipairs( oper1.value ) do
+				expr = compare( value1, FILTER_TYPE_STRING )
+				if expr == nil then return end
+				if expr then break end
+			end
+		elseif comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_PATTERN then
+			expr = oper2.value.compare( oper1.value, oper1.type )
+			if expr == nil then return end
+		else
+			return
+		end
+		if cond == FILTER_COND_FALSE then expr = not expr end
+
+		return expr
+	end
+
 	function evaluate( rule )
 		-- short circuit binary logic to simplify evaluation
 		local res = ( rule.bool == FILTER_BOOL_AND )
@@ -441,11 +493,12 @@ function AuthFilter( path, name, debug )
 				rule.expr = { }
 
 			elseif stmt[ 1 ] == "when" or stmt[ 1 ] == "until" then
-				if not rule then return trace( "Unexpected 'when' or 'until' statement in ruleset", num ) end
-				if #stmt ~= 4 then return trace( "Invalid 'when' or 'until' statement in ruleset", num ) end
+				if rule then return trace( "Unexpected 'when' or 'until' statement in ruleset", num ) end
+				if #stmt ~= 5 then return trace( "Invalid 'when' or 'until' statement in ruleset", num ) end
 
+				local mode = ( { ["pass"] = FILTER_MODE_PASS, ["fail"] = FILTER_MODE_FAIL } )[ stmt[ 5 ] ]
 				local cond = ( { ["when"] = FILTER_COND_TRUE, ["until"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
-				local comp = ( { ["eq"] = FILTER_COMP_EQ, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
+				local comp = ( { ["in"] = FILTER_COMP_IN, ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["gte"] = FILTER_COMP_GTE, ["lte"] = FILTER_COMP_LTE, ["has"] = FILTER_COMP_HAS, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
 
 				if not cond or not comp then
 					return trace( "Unrecognized keywords in ruleset", num )
@@ -456,40 +509,21 @@ function AuthFilter( path, name, debug )
 
 				if not oper1 or not oper2 then
 					return trace( "Unrecognized operands in ruleset", num )
-				elseif oper1.type ~= FILTER_TYPE_SERIES then
+				end
+
+				local expr = get_result( cond, comp, oper1, oper2 )
+				if expr == nil then
 					return trace( "Mismatched operands in ruleset", num )
+				elseif expr then
+					return num, ( mode == FILTER_MODE_FAIL and note or nil )
 				end
-
-				-- cache second operand value for efficiency
-				-- TODO: might want to move the redundant operand type checks out of loop?
-
-				local value2 = ( comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_STRING ) and string.upper( oper2.value ) or oper2.value
-				local type2 = oper2.type
-				local expr = false
-
-				for i, value1 in ipairs( oper1.value ) do
-					if comp == FILTER_COMP_EQ and type2 == FILTER_TYPE_STRING then
-						expr = ( value1 == value2 )
-					elseif comp == FILTER_COMP_IS and type2 == FILTER_TYPE_STRING then
-						expr = ( string.upper( value1 ) == value2 )
-					elseif comp == FILTER_COMP_IS and type2 == FILTER_TYPE_PATTERN then
-						expr = value2.compare( value1, FILTER_TYPE_STRING )
-						if expr == nil then return trace( "Ambiguous pattern mode in ruleset", num ) end
-					else
-						return trace( "Mismatched operands in ruleset", num )
-					end
-					if expr then break end
-				end
-				if cond == FILTER_COND_FALSE then expr = not expr end
-
-				table.insert( rule.expr, expr )
 
 			elseif stmt[ 1 ] == "if" or stmt[ 1 ] == "unless" then
 				if not rule then return trace( "Unexpected 'if' or 'unless' statement in ruleset", num ) end
 				if #stmt ~= 4 then return trace( "Invalid 'if' or 'unless' statement in ruleset", num ) end
 
 				local cond = ( { ["if"] = FILTER_COND_TRUE, ["unless"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
-				local comp = ( { ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["gte"] = FILTER_COMP_GTE, ["lte"] = FILTER_COMP_LTE, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
+				local comp = ( { ["in"] = FILTER_COMP_IN, ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["gte"] = FILTER_COMP_GTE, ["lte"] = FILTER_COMP_LTE, ["has"] = FILTER_COMP_HAS, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
 
 				if not cond or not comp then
 					return trace( "Unrecognized keywords in ruleset", num )
@@ -502,29 +536,10 @@ function AuthFilter( path, name, debug )
 					return trace( "Unrecognized operands in ruleset", num )
 				end
 
-				-- only allow comparisons of appropriate and equivalent datatypes
-				local do_math = { [FILTER_TYPE_NUMBER] = true, [FILTER_TYPE_PERIOD] = true, [FILTER_TYPE_MOMENT] = true, [FILTER_TYPE_DATESPEC] = true, [FILTER_TYPE_TIMESPEC] = true }
-
-				local expr
-				if comp == FILTER_COMP_EQ and oper1.type == oper2.type and oper1.type ~= FILTER_TYPE_SERIES and oper1.type ~= FILTER_TYPE_PATTERN then
-					expr = ( oper1.value == oper2.value )
-				elseif comp == FILTER_COMP_GT and oper1.type == oper2.type and do_math[ oper2.type ] then
-					expr = ( oper1.value > oper2.value )
-				elseif comp == FILTER_COMP_GTE and oper1.type == oper2.type and do_math[ oper2.type ] then
-					expr = ( oper1.value >= oper2.value )
-				elseif comp == FILTER_COMP_LT and oper1.type == oper2.type and do_math[ oper2.type ] then
-					expr = ( oper1.value < oper2.value )
-				elseif comp == FILTER_COMP_LTE and oper1.type == oper2.type and do_math[ oper2.type ] then
-					expr = ( oper1.value <= oper2.value )
-				elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_STRING then
-					expr = ( string.upper( oper1.value ) == string.upper( oper2.value ) )
-				elseif comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_PATTERN then
-					expr = oper2.value.compare( oper1.value, oper1.type )
-					if expr == nil then return trace( "Ambiguous pattern mode in ruleset", num ) end
-				else
+				local expr = get_result( cond, comp, oper1, oper2 )
+				if expr == nil then
 					return trace( "Mismatched operands in ruleset", num )
 				end
-				if cond == FILTER_COND_FALSE then expr = not expr end
 
 				table.insert( rule.expr, expr )
 			else
