@@ -5,8 +5,8 @@
 #####################################################################
 
 pass any
-if $addr eq "172.16.100.1"
-if $addr eq "172.16.100.2"
+if $addr eq 172.16.100.1
+if $addr eq 172.16.100.2
 if $name eq "admin"
 continue
 
@@ -14,16 +14,16 @@ fail now
 
 #####################################################################
 #
-# block a range of IP addresses using wildcards
+# block access from a range of IP addresses
 #
 #####################################################################
 
 try "This subnet is blocked by the administrator."
 
 fail any
-if $addr is /192.88.99.*/
-if $addr is /203.0.113.*/
-if $addr is /192.168.*.*/
+if $addr is /192.88.99.6</a
+if $addr is /203.0.113.?/a
+if $addr is /192.168.12^14.?/a
 continue
 
 pass now
@@ -36,10 +36,7 @@ pass now
 
 try "The account '$name' is not permitted to join this server."
 
-pass any
-if $name eq "admin"
-when @whitelist.txt eq $name
-continue
+when $name in @whitelist.txt pass
 
 fall now
 
@@ -50,9 +47,8 @@ fall now
 #####################################################################
 
 try "The account '$name' is not permitted to join this server."
-fail all
-when @blacklist.txt eq $name
-continue
+
+when $name in @blacklist.txt fail
 
 pass now
 
@@ -74,9 +70,7 @@ fail now
 
 try "Sorry, we do not accept all uppercase player names."
 
-fail all
-$name eq uc($name)
-continue
+when $name eq uc($name) fail
 
 pass now
 
@@ -89,8 +83,8 @@ pass now
 try "Sorry, this player name is too long or too short."
 
 fail any
-$name->len() gt 20
-$name->len() lt 3
+if $name->len() gt 20
+if $name->len() lt 3
 continue
 
 pass now
@@ -123,8 +117,8 @@ pass now
 try "There are too many players online right now."
 
 fail all
-$is_new eq $true
-$cur_users gte $max_users->mul(0.8)
+if $is_new eq $true
+if $cur_users gte $max_users->mul(0.8)
 continue
 
 pass now
@@ -138,8 +132,8 @@ pass now
 try "Sorry, this acccount has been permanently restricted."
 
 fail all
-$is_new eq $true
-when ("moderator","server","client","owner","player","system","operator","minetest") is $name
+if $is_new eq $true
+if ("moderator","server","client","owner","player","system","operator","minetest") has $name
 continue
 
 pass now
@@ -169,7 +163,7 @@ try "Sorry, we are not accepting new players at this time."
 
 fail now
 if $is_new eq $true
-when ("Sat","Sun") eq $clock->day()
+if $clock->day() in ("Sat","Sun")
 continue
 
 pass now
