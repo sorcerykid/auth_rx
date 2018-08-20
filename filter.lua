@@ -1,5 +1,5 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.12 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.13 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
@@ -34,20 +34,6 @@ FILTER_COMP_HAS = 57
 
 local decode_base64 = minetest.decode_base64
 local encode_base64 = minetest.encode_base64
-local trim = function ( str )
-	return string.sub( str, 2, -2 )
-end
-local localtime = function ( str )
-	-- daylight saving time is factored in automatically
-	local x = { string.match( str, "^(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)Z$" ) }
-	return #x > 0 and os.time( { year = x[ 1 ], month = x[ 2 ], day = x[ 3 ], hour = x[ 4 ], min = x[ 5 ], sec = x[ 6 ] } ) or nil
-end
-local redate = function ( ts )
-	-- convert to standard time (for timespec and datespec comparisons)
-	local x = os.date( "*t", ts )
-	x.isdst = false		
-	return os.time( x )
-end
 
 ----------------------------
 -- StringPattern class
@@ -110,13 +96,12 @@ function NumberPattern( phrase, is_mode, tokens, parser )
 end
 
 ----------------------------
--- AuthFilter class
+-- GenericFilter class
 ----------------------------
 
-function AuthFilter( path, name, debug )
-	local src
-	local is_active = true
+function GenericFilter( )
 	local self = { }
+	local trim, localtime, redate
 
 	local funcs = {
 		["add"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_NUMBER, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) return a + b end },
@@ -148,31 +133,21 @@ function AuthFilter( path, name, debug )
 		["count"] = { type = FILTER_TYPE_NUMBER, args = { FILTER_TYPE_SERIES, FILTER_TYPE_STRING }, def = function ( v, a, b ) local t = 0; for i, v in ipairs( a ) do if v == b then t = t + 1; end; end; return t end },
 		["clip"] = { type = FILTER_TYPE_SERIES, args = { FILTER_TYPE_SERIES, FILTER_TYPE_NUMBER }, def = function ( v, a, b ) local x = { }; local s = b < 0 and #a + b + 1 or 0; for i = 0, math.abs( b ) do table.insert( x, a[ s + i ] ); end; return x; end },
 	}
+	local do_math = { [FILTER_TYPE_NUMBER] = true, [FILTER_TYPE_PERIOD] = true, [FILTER_TYPE_MOMENT] = true, [FILTER_TYPE_DATESPEC] = true, [FILTER_TYPE_TIMESPEC] = true }
+	local periods = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
 
-	----------------------------
-	-- private methods
-	----------------------------
-
-	local trace, get_operand, get_result, evaluate, tokenize
-
-	trace = debug or function ( msg, num )
-		minetest.log( "error", string.format( "%s (%s/%s, line %d)", msg, path, name, num ) )
-		return num, "The server encountered an internal error."
-	end
-
-	function get_operand( token, vars )
-		local t, v, ref
-
-		local find_token = function ( pat )
-			-- use back-references for easier conditional branching
-			ref = { string.match( token, pat ) }
-			return #ref > 0 and #ref
-		end
-
-		if find_token( "^(.-)([a-zA-Z0-9_]+)&([A-Za-z0-9+/]*);$" ) then
-			local name = ref[ 2 ]
-			local suffix = decode_base64( ref[ 3 ] )
-			local prefix = ref[ 1 ]
+	local parsers = {
+		{ expr = "^%$([a-zA-Z0-9_]+)$", proc = function ( refs, vars )
+			local name = refs[ 1 ]
+			if not vars[ name ] or vars[ name ].value == nil then
+				return nil
+			end
+			return { type = vars[ name ].type, value = vars[ name ].value, const = false }
+		end },
+		{ expr = "^(.-)([a-zA-Z0-9_]+)&([A-Za-z0-9+/]*);$", proc = function ( refs, vars )
+			local name = refs[ 2 ]
+			local suffix = decode_base64( refs[ 3 ] )
+			local prefix = refs[ 1 ]
 			suffix = string.gsub( suffix, "%b()", function( str )
 				-- encode nested function arguments
 				return "&" .. encode_base64( trim( str ) ) .. ";"
@@ -188,52 +163,57 @@ function AuthFilter( path, name, debug )
 				return nil
 			end
 			local params = { }
+			local c = true
 			for i, a in ipairs( args ) do
-				local oper = get_operand( a, vars )
+				local oper, ix, rx = self.get_operand( a, vars )
 				if not oper or oper.type ~= funcs[ name ].args[ i ] then
 					return nil
 				end
+				if not oper.const then
+					-- propagate non-constant to parent
+					c = false
+				end
 				table.insert( params, oper.value )
 			end
-			t = funcs[ name ].type
-			v = funcs[ name ].def( vars, unpack( params ) )
-		elseif find_token( "^&([A-Za-z0-9+/]*);$" ) then
-			t = FILTER_TYPE_SERIES
-			v = { }
-			local suffix = decode_base64( ref[ 1 ] )
+			return { type = funcs[ name ].type, value = funcs[ name ].def( vars, unpack( params ) ), const = c }
+		end },
+		{ expr = "^&([A-Za-z0-9+/]*);$", proc = function ( refs, vars )
+			local suffix = decode_base64( refs[ 1 ] )
 			suffix = string.gsub( suffix, "%b()", function( str )
 				-- encode nested function arguments
 				return "&" .. encode_base64( trim( str ) ) .. ";"
 			end )
 			local elems = string.split( suffix, ",", false )
-			for i, e in ipairs( elems ) do
-				local oper = get_operand( e, vars )
+			local v = { }
+			local c = true
+			for i, a in ipairs( elems ) do
+				local oper = self.get_operand( a, vars )
 				if not oper or oper.type ~= FILTER_TYPE_STRING then
 					return nil
 				end
+				if not oper.const then
+					-- propagate non-constant to parent
+					c = false
+				end
 				table.insert( v, oper.value )
 			end
-		elseif find_token( "^%$([a-zA-Z0-9_]+)$" ) then
-			local name = ref[ 1 ]
-			if not vars[ name ] or vars[ name ].value == nil then
-				return nil
-			end
-			t = vars[ name ].type
-			v = vars[ name ].value
-		elseif find_token( "^@([a-zA-Z0-9_]+%.txt)$" ) then
-			t = FILTER_TYPE_SERIES
-			v = { }
-			local file = io.open( path .. "/filters/" .. ref[ 1 ], "rb" )
+			return { type = FILTER_TYPE_SERIES, value = v, const = c }
+		end },
+		{ expr = "^@([a-zA-Z0-9_]+%.txt)$", proc = function ( refs, vars )
+			local v = { }
+			local file = io.open( path .. "/filters/" .. refs[ 1 ], "rb" )
 			if not file then
 				return nil
 			end
 			for line in file:lines( ) do
 				table.insert( v, line )
 			end
-                elseif find_token( "^/([a-zA-Z0-9+/]*),([stda]);$" ) then
-                        t = FILTER_TYPE_PATTERN
-                        local phrase = minetest.decode_base64( ref[ 1 ] )
-			if ref[ 2 ] == "s" then
+			return { type = FILTER_TYPE_SERIES, value = v, const = true }
+		end },
+		{ expr = "^/([a-zA-Z0-9+/]*),([stda]);$", proc = function( refs, vars )
+			local v
+			local phrase = minetest.decode_base64( refs[ 1 ] )
+			if refs[ 2 ] == "s" then
 				v = StringPattern( phrase, { [FILTER_TYPE_STRING] = true }, {
 					["["] = "",
 					["]"] = "",
@@ -253,21 +233,21 @@ function AuthFilter( path, name, debug )
 					["#"] = "%d",
 					["&"] = "%a",
 				} )
-			elseif ref[ 2 ] == "t" then
+			elseif refs[ 2 ] == "t" then
 				phrase = string.split( phrase, ":", false )
 				v = NumberPattern( phrase, { [FILTER_TYPE_MOMENT] = true }, { "%d?%d", "%d%d", "%d%d" }, function ( value )
 					-- direct translation (accounts for daylight saving time and time-zone offset)
 					local timespec = os.date( "*t", value )
 					return { timespec.hour, timespec.min, timespec.sec }
 				end )
-			elseif ref[ 2 ] == "d" then
+			elseif refs[ 2 ] == "d" then
 				phrase = string.split( phrase, "-", false )
 				v = NumberPattern( phrase, { [FILTER_TYPE_MOMENT] = true }, { "%d%d", "%d%d", "%d%d%d%d" }, function ( value )
 					-- direct translation (accounts for daylight saving time and time-zone offset)
 					local datespec = os.date( "*t", value )	
 					return { datespec.day, datespec.month, datespec.year }
 				end )
-			elseif ref[ 2 ] == "a" then
+			elseif refs[ 2 ] == "a" then
 				phrase = string.split( phrase, ".", false )
 				v = NumberPattern( phrase, { [FILTER_TYPE_ADDRESS] = true }, { "%d?%d?%d", "%d?%d?%d", "%d?%d?%d", "%d?%d?%d" }, function ( value )
 					return unpack_address( value )
@@ -276,80 +256,141 @@ function AuthFilter( path, name, debug )
 			if not v then
 				return nil
 			end
-		elseif find_token( "^(%d+)([ywdhms])$" ) then
-			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
-			t = FILTER_TYPE_PERIOD
-			v = tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
-		elseif find_token( "^([-+]%d+)([ywdhms])$" ) then
-			local factor = { y = 31536000, w = 604800, d = 86400, h = 3600, m = 60, s = 1 }
-			local origin = string.byte( ref[ 1 ] ) == 45 and vars.clock.value or vars.epoch.value
-			t = FILTER_TYPE_MOMENT
-			v = origin + tonumber( ref[ 1 ] ) * factor[ ref[ 2 ] ]
-		elseif find_token( "^(%d?%d):(%d%d):(%d%d)$" ) or find_token( "^(%d?%d):(%d%d)$" ) then
+			return { type = FILTER_TYPE_PATTERN, value = v, const = true }
+		end },
+		{ expr = "^(%d+)([ywdhms])$", proc = function ( refs, vars )
+			local v = tonumber( refs[ 1 ] ) * periods[ refs[ 2 ] ]
+			return { type = FILTER_TYPE_PERIOD, value = v, const = true }
+		end },
+		{ expr = "^([-+]%d+)([ywdhms])$", proc = function ( refs, vars )
+			local origin = string.byte( refs[ 1 ] ) == 45 and vars.clock.value or vars.epoch.value
+			local v = origin + tonumber( refs[ 1 ] ) * periods[ refs[ 2 ] ]
+			return { type = FILTER_TYPE_MOMENT, value = v, const = true }
+		end },
+		{ expr = "^(%d?%d):(%d%d):(%d%d)$", proc = function ( refs, vars )
 			local timespec = {
-				isdst = false, day = 1, month = 1, year = 1970, hour = tonumber( ref[ 1 ] ), min = tonumber( ref[ 2 ] ), sec = ref[ 3 ] and tonumber( ref[ 3 ] ) or 0,
+				isdst = false, day = 1, month = 1, year = 1970, hour = tonumber( refs[ 1 ] ), min = tonumber( refs[ 2 ] ), sec = tonumber( refs[ 3 ] ),
 			}
-			t = FILTER_TYPE_TIMESPEC
-			v = ( os.time( timespec ) - vars.epoch.value ) % 86400			-- strip date component and time-zone offset (standardize time and account for overflow too)
-		elseif find_token( "^(%d%d)%-(%d%d)%-(%d%d%d%d)$" ) then
+			-- strip date component and time-zone offset (standardize time and account for overflow too)
+			local v = ( os.time( timespec ) - vars.epoch.value ) % 86400
+			return { type = FILTER_TYPE_TIMESPEC, value = v, const = true }
+		end },
+		{ expr = "^(%d%d)%-(%d%d)%-(%d%d%d%d)$", proc = function ( refs, vars )
 			local datespec = {
-				isdst = false, day = tonumber( ref[ 1 ] ), month = tonumber( ref[ 2 ] ), year = tonumber( ref[ 3 ] ), hour = 0,
+				isdst = false, day = tonumber( refs[ 1 ] ), month = tonumber( refs[ 2 ] ), year = tonumber( refs[ 3 ] ), hour = 0,
 			}
-			t = FILTER_TYPE_DATESPEC
-			v = math.floor( ( os.time( datespec ) - vars.epoch.value ) / 86400 )	-- strip time component and time-zone offset (standardize time too)
-		elseif find_token( "^'([a-zA-Z0-9+/]*);$" ) then
-			t = FILTER_TYPE_STRING
-			v = decode_base64( ref[ 1 ] )
-		elseif find_token( "^\"([a-zA-Z0-9+/]*);$" ) then
-			t = FILTER_TYPE_STRING
-			v = decode_base64( ref[ 1 ] )
-			v = string.gsub( v, "%$([a-zA-Z_]+)", function ( var )
-				return vars[ var ] and tostring( vars[ var ].value ) or "?"
+			-- strip time component and time-zone offset (standardize time too)
+			local v = math.floor( ( os.time( datespec ) - vars.epoch.value ) / 86400 )
+			return { type = FILTER_TYPE_DATESPEC, value = v, const = true }
+		end },
+		{ expr = "^'([a-zA-Z0-9+/]*);$", proc = function ( refs, vars )
+			local v = decode_base64( refs[ 1 ] )
+			return { type = FILTER_TYPE_STRING, value = v, const = true }
+		end },
+		{ expr = "^\"([a-zA-Z0-9+/]*);$", proc = function ( refs, vars )
+			local v = decode_base64( refs[ 1 ] )
+			local c = true
+			v = string.gsub( v, "%$([a-zA-Z_]+)", function ( name )
+				-- variable interpolation is non-constant
+				c = false
+				return vars[ name ] and tostring( vars[ name ].value ) or "?"
 			end )
-		elseif find_token( "^-?%d+$" ) or find_token( "^-?%d*%.%d+$" ) then
-			t = FILTER_TYPE_NUMBER
-			v = tonumber( ref[ 1 ] )
-		elseif find_token( "^(%d+)%.(%d+)%.(%d+)%.(%d+)$" ) then
-			t = FILTER_TYPE_ADDRESS
-			v = tonumber( ref[ 1 ] ) * 16777216 + tonumber( ref[ 2 ] ) * 65536 + tonumber( ref[ 3 ] ) * 256 + tonumber( ref[ 4 ] )
-		else
-			return nil
-		end
-		return { type = t, value = v }
+			return { type = FILTER_TYPE_STRING, value = v, const = c }
+		end },
+		{ expr = "^-?%d+$", proc = function ( refs, vars )
+			local v = tonumber( refs[ 1 ] )
+			return { type = FILTER_TYPE_NUMBER, value = v, const = true }
+		end },
+		{ expr = "^-?%d*%.%d+$", proc = function ( refs, vars )
+			local v = tonumber( refs[ 1 ] )
+			return { type = FILTER_TYPE_NUMBER, value = v, const = true }
+		end },
+		{ expr = "^(%d+)%.(%d+)%.(%d+)%.(%d+)$", proc = function ( refs, vars )
+			local v = tonumber( refs[ 1 ] ) * 16777216 + tonumber( refs[ 2 ] ) * 65536 + tonumber( refs[ 3 ] ) * 256 + tonumber( refs[ 4 ] )
+			return { type = FILTER_TYPE_ADDRESS, value = v, const = true }
+		end },
+	}
+
+	---- private methods ----
+
+	function trim( str )
+		return string.sub( str, 2, -2 )
 	end
 
-	function get_result( cond, comp, oper1, oper2 )
-		-- only allow comparisons of appropriate and equivalent datatypes
-		local do_math = { [FILTER_TYPE_NUMBER] = true, [FILTER_TYPE_PERIOD] = true, [FILTER_TYPE_MOMENT] = true, [FILTER_TYPE_DATESPEC] = true, [FILTER_TYPE_TIMESPEC] = true }
+	function localtime( str )
+		-- daylight saving time is factored in automatically
+		local x = { string.match( str, "^(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+)Z$" ) }
+		return #x > 0 and os.time( { year = x[ 1 ], month = x[ 2 ], day = x[ 3 ], hour = x[ 4 ], min = x[ 5 ], sec = x[ 6 ] } ) or nil
+	end
+
+	function redate( ts )
+		-- convert to standard time (for timespec and datespec comparisons)
+		local x = os.date( "*t", ts )
+		x.isdst = false		
+		return os.time( x )
+	end
+
+	---- public methods ----
+
+	self.define_func = function ( name, type, args, def )
+		funcs[ name ] = { type = type, args = args, def = def }
+	end
+
+	self.add_preset_vars = function ( vars )
+		vars["clock"] = { type = FILTER_TYPE_MOMENT, value = os.time( ) }
+		vars["epoch"] = { type = FILTER_TYPE_MOMENT, value = os.time( { year = 1970, month = 1, day = 1, hour = 0 } ) }
+		vars["true"] = { type = FILTER_TYPE_BOOLEAN, value = true }
+		vars["false"] = { type = FILTER_TYPE_BOOLEAN, value = false }
+	end
+
+	self.get_operand_parser = function ( token )
+		local match = string.match
+		for i, v in ipairs( parsers ) do
+			local refs = { match( token, v.expr ) }
+			if #refs > 0 then
+				return v.proc, refs
+			end
+		end
+	end
+
+	self.get_operand = function ( token, vars )
+		local proc, refs = self.get_operand_parser( token )
+		if proc then return proc( refs, vars ) end
+	end
+
+	self.translate = function ( input, vars )
+		return self.get_operand( self.tokenize( input ), vars )
+	end
+
+	self.get_result = function ( cond, comp, oper1, oper2 )
+		local type1 = oper1.type
+		local type2 = oper2.type
 		local expr
 
-		if comp == FILTER_COMP_EQ and oper1.type == oper2.type and oper1.type ~= FILTER_TYPE_SERIES and oper1.type ~= FILTER_TYPE_PATTERN then
+		-- only allow comparisons of appropriate and equivalent datatypes
+		if comp == FILTER_COMP_EQ and type1 == type2 and type1 ~= FILTER_TYPE_SERIES and type1 ~= FILTER_TYPE_PATTERN then
 			expr = ( oper1.value == oper2.value )
-		elseif comp == FILTER_COMP_GT and oper1.type == oper2.type and do_math[ oper2.type ] then
+		elseif comp == FILTER_COMP_GT and type1 == type2 and do_math[ type2 ] then
 			expr = ( oper1.value > oper2.value )
-		elseif comp == FILTER_COMP_GTE and oper1.type == oper2.type and do_math[ oper2.type ] then
+		elseif comp == FILTER_COMP_GTE and type1 == type2 and do_math[ type2 ] then
 			expr = ( oper1.value >= oper2.value )
-		elseif comp == FILTER_COMP_LT and oper1.type == oper2.type and do_math[ oper2.type ] then
+		elseif comp == FILTER_COMP_LT and type1 == type2 and do_math[ type2 ] then
 			expr = ( oper1.value < oper2.value )
-		elseif comp == FILTER_COMP_LTE and oper1.type == oper2.type and do_math[ oper2.type ] then
+		elseif comp == FILTER_COMP_LTE and type1 == type2 and do_math[ type2 ] then
 			expr = ( oper1.value <= oper2.value )
-		elseif comp == FILTER_COMP_IS and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_STRING then
+		elseif comp == FILTER_COMP_IS and type1 == FILTER_TYPE_STRING and type2 == FILTER_TYPE_STRING then
 			expr = ( string.upper( oper1.value ) == string.upper( oper2.value ) )
-		elseif comp == FILTER_COMP_IN and oper1.type == FILTER_TYPE_STRING and oper2.type == FILTER_TYPE_SERIES then
-			local value1 = oper1.value
-			expr = false
-			for i, value2 in ipairs( oper2.value ) do
-				expr = ( value1 == value2 )
-				if expr then break end
-			end
-		elseif comp == FILTER_COMP_HAS and oper1.type == FILTER_TYPE_SERIES and oper2.type == FILTER_TYPE_STRING then
+		elseif comp == FILTER_COMP_IS and type2 == FILTER_TYPE_PATTERN then
+			expr = oper2.value.compare( oper1.value, type1 )
+			if expr == nil then return end
+		elseif comp == FILTER_COMP_HAS and type1 == FILTER_TYPE_SERIES and type2 == FILTER_TYPE_STRING then
 			local value2 = string.upper( oper2.value )
 			expr = false
 			for i, value1 in ipairs( oper1.value ) do
 				expr = ( string.upper( value1 ) == value2 )
 				if expr then break end
 			end
-		elseif comp == FILTER_COMP_HAS and oper1.type == FILTER_TYPE_SERIES and oper2.type == FILTER_TYPE_PATTERN then
+		elseif comp == FILTER_COMP_HAS and type1 == FILTER_TYPE_SERIES and type2 == FILTER_TYPE_PATTERN then
 			local compare = oper2.value.compare
 			expr = false
 			for i, value1 in ipairs( oper1.value ) do
@@ -357,9 +398,13 @@ function AuthFilter( path, name, debug )
 				if expr == nil then return end
 				if expr then break end
 			end
-		elseif comp == FILTER_COMP_IS and oper2.type == FILTER_TYPE_PATTERN then
-			expr = oper2.value.compare( oper1.value, oper1.type )
-			if expr == nil then return end
+		elseif comp == FILTER_COMP_IN and type1 == FILTER_TYPE_STRING and type2 == FILTER_TYPE_SERIES then
+			local value1 = oper1.value
+			expr = false
+			for i, value2 in ipairs( oper2.value ) do
+				expr = ( value1 == value2 )
+				if expr then break end
+			end
 		else
 			return
 		end
@@ -368,7 +413,53 @@ function AuthFilter( path, name, debug )
 		return expr
 	end
 
-	function evaluate( rule )
+	self.tokenize = function ( line )
+		-- encode string and pattern literals and function arguments to simplify parsing (order IS significant)
+		line = string.gsub( line, "\"(.-)\"", function ( str )
+			return "\"" .. encode_base64( str ) .. ";"
+		end )
+		line = string.gsub( line, "'(.-)'", function ( str )
+			return "'" .. encode_base64( str ) .. ";"
+		end )
+		line = string.gsub( line, "/(.-)/([stda]?)", function ( a, b )
+			return "/" .. encode_base64( a ) .. "," .. ( b == "" and "s" or b ) .. ";"
+		end )
+		line = string.gsub( line, "%b()", function ( str )
+			return "&" .. encode_base64( trim( str ) ) .. ";"
+		end )
+		return line
+	end
+
+	return self
+end
+
+----------------------------
+-- AuthFilter subclass
+----------------------------
+
+function AuthFilter( path, name, debug )
+	local self = { }
+	local parent = GenericFilter( )	-- inherit from parent class
+	local src
+
+	local mode_defs = { ["pass"] = FILTER_MODE_PASS, ["fail"] = FILTER_MODE_FAIL }
+	local bool_defs = { ["all"] = FILTER_BOOL_AND, ["any"] = FILTER_BOOL_OR, ["one"] = FILTER_BOOL_XOR, ["now"] = FILTER_BOOL_NOW }
+	local cond1_defs = { ["when"] = FILTER_COND_TRUE, ["until"] = FILTER_COND_FALSE }
+	local cond2_defs = { ["if"] = FILTER_COND_TRUE, ["unless"] = FILTER_COND_FALSE }
+	local comp_defs = { ["in"] = FILTER_COMP_IN, ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["gte"] = FILTER_COMP_GTE, ["lte"] = FILTER_COMP_LTE, ["has"] = FILTER_COMP_HAS, ["is"] = FILTER_COMP_IS }
+
+	---- private methods ----
+
+	local get_operand = parent.get_operand
+	local get_result = parent.get_result
+	local tokenize = parent.tokenize
+
+	local trace = debug or function ( msg, num )
+		minetest.log( "error", string.format( "%s (%s/%s, line %d)", msg, path, name, num ) )
+		return "The server encountered an internal error.", num
+	end
+
+	local evaluate = function ( rule )
 		-- short circuit binary logic to simplify evaluation
 		local res = ( rule.bool == FILTER_BOOL_AND )
 		local xor = 0
@@ -387,30 +478,9 @@ function AuthFilter( path, name, debug )
 		return res
 	end
 
-	function tokenize( line )
-		-- encode string and pattern literals and function arguments to simplify parsing (order IS significant)
-		line = string.gsub( line, "\"(.-)\"", function ( str )
-			return "\"" .. encode_base64( str ) .. ";"
-		end )
-		line = string.gsub( line, "'(.-)'", function ( str )
-			return "'" .. encode_base64( str ) .. ";"
-		end )
-		line = string.gsub( line, "/(.-)/([stda]?)", function ( a, b )
-			return "/" .. encode_base64( a ) .. "," .. ( b == "" and "s" or b ) .. ";"
-		end )
-		line = string.gsub( line, "%b()", function ( str )
-			return "&" .. encode_base64( trim( str ) ) .. ";"
-		end )
-		return line
-	end
+	---- public methods ----
 
-	----------------------------
-	-- public methods
-	----------------------------
-
-	self.translate = function ( field, vars )
-		return get_operand( tokenize( field ), vars )
-	end
+	self.add_preset_vars = parent.add_preset_vars
 
 	self.refresh = function ( )
 		local file = io.open( path .. "/" .. name, "r" )
@@ -420,27 +490,16 @@ function AuthFilter( path, name, debug )
 		src = { }
 		for line in file:lines( ) do
 			-- skip comments (lines beginning with hash character) and blank lines
-			-- TODO: remove extraneous white space at beginning of lines
 			table.insert( src, string.byte( line ) ~= 35 and tokenize( line ) or "" )
 		end
 		file:close( file )
 	end
 
-	self.add_preset_vars = function ( vars )
-		vars[ "clock" ] = { type = FILTER_TYPE_MOMENT, value = os.time( ) }
-		vars[ "epoch" ] = { type = FILTER_TYPE_MOMENT, value = os.time( { year = 1970, month = 1, day = 1, hour = 0 } ) }
-		vars[ "true" ] = { type = FILTER_TYPE_BOOLEAN, value = true }
-		vars[ "false" ] = { type = FILTER_TYPE_BOOLEAN, value = false }
-	end
-
-	self.process = function( vars )
+	self.process = function( vars, is_local )
 		local rule
 		local note = "Access denied."
 
-		if not is_active then return end
-
-		if not debug then
-			-- allow overriding preset vars when debugger is active
+		if is_local then
 			self.add_preset_vars( vars )
 		end
 
@@ -455,7 +514,7 @@ function AuthFilter( path, name, debug )
 				if #stmt ~= 1 then return trace( "Invalid 'continue' statement in ruleset", num ) end
 
 				if evaluate( rule ) then
-					return num, ( rule.mode == FILTER_MODE_FAIL and note or nil )
+					return ( rule.mode == FILTER_MODE_FAIL and note or nil ), num
 				end
 
 				rule = nil
@@ -475,30 +534,26 @@ function AuthFilter( path, name, debug )
 				if rule then return trace( "Missing 'continue' statement in ruleset", num ) end
 				if #stmt ~= 2 then return trace( "Invalid 'pass' or 'fail' statement in ruleset", num ) end
 
-				rule = { }
-
-				local mode = ( { ["pass"] = FILTER_MODE_PASS, ["fail"] = FILTER_MODE_FAIL } )[ stmt[ 1 ] ]
-				local bool = ( { ["all"] = FILTER_BOOL_AND, ["any"] = FILTER_BOOL_OR, ["one"] = FILTER_BOOL_XOR, ["now"] = FILTER_BOOL_NOW } )[ stmt[ 2 ] ]
+				local mode = mode_defs[ stmt[ 1 ] ]
+				local bool = bool_defs[ stmt[ 2 ] ]
 
 				if not mode or not bool then
 					return trace( "Unrecognized keywords in ruleset", num )
 				end
 
 				if bool == FILTER_BOOL_NOW then
-					return num, ( mode == FILTER_MODE_FAIL and note or nil )
+					return ( mode == FILTER_MODE_FAIL and note or nil ), num
 				end
 
-				rule.mode = mode
-				rule.bool = bool
-				rule.expr = { }
+				rule = { mode = mode, bool = bool, expr = { } }
 
 			elseif stmt[ 1 ] == "when" or stmt[ 1 ] == "until" then
 				if rule then return trace( "Unexpected 'when' or 'until' statement in ruleset", num ) end
 				if #stmt ~= 5 then return trace( "Invalid 'when' or 'until' statement in ruleset", num ) end
 
-				local mode = ( { ["pass"] = FILTER_MODE_PASS, ["fail"] = FILTER_MODE_FAIL } )[ stmt[ 5 ] ]
-				local cond = ( { ["when"] = FILTER_COND_TRUE, ["until"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
-				local comp = ( { ["in"] = FILTER_COMP_IN, ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["gte"] = FILTER_COMP_GTE, ["lte"] = FILTER_COMP_LTE, ["has"] = FILTER_COMP_HAS, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
+				local cond = cond1_defs[ stmt[ 1 ] ]
+				local comp = comp_defs[ stmt[ 3 ] ]
+				local mode = mode_defs[ stmt[ 5 ] ]
 
 				if not cond or not comp then
 					return trace( "Unrecognized keywords in ruleset", num )
@@ -515,15 +570,15 @@ function AuthFilter( path, name, debug )
 				if expr == nil then
 					return trace( "Mismatched operands in ruleset", num )
 				elseif expr then
-					return num, ( mode == FILTER_MODE_FAIL and note or nil )
+					return ( mode == FILTER_MODE_FAIL and note or nil ), num
 				end
 
 			elseif stmt[ 1 ] == "if" or stmt[ 1 ] == "unless" then
 				if not rule then return trace( "Unexpected 'if' or 'unless' statement in ruleset", num ) end
 				if #stmt ~= 4 then return trace( "Invalid 'if' or 'unless' statement in ruleset", num ) end
 
-				local cond = ( { ["if"] = FILTER_COND_TRUE, ["unless"] = FILTER_COND_FALSE } )[ stmt[ 1 ] ]
-				local comp = ( { ["in"] = FILTER_COMP_IN, ["eq"] = FILTER_COMP_EQ, ["gt"] = FILTER_COMP_GT, ["lt"] = FILTER_COMP_LT, ["gte"] = FILTER_COMP_GTE, ["lte"] = FILTER_COMP_LTE, ["has"] = FILTER_COMP_HAS, ["is"] = FILTER_COMP_IS } )[ stmt[ 3 ] ]
+				local cond = cond2_defs[ stmt[ 1 ] ]
+				local comp = comp_defs[ stmt[ 3 ] ]
 
 				if not cond or not comp then
 					return trace( "Unrecognized keywords in ruleset", num )
@@ -547,18 +602,6 @@ function AuthFilter( path, name, debug )
 			end
 		end
 		return trace( "Unexpected end-of-file in ruleset", 0 )
-	end
-
-	self.enable = function ( )
-		is_active = true
-	end
-
-	self.disable = function ( )
-		is_active = false
-	end
-
-	self.is_active = function ( )
-		return is_active
 	end
 
 	self.refresh( )

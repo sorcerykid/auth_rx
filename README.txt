@@ -1,4 +1,4 @@
-Auth Redux Mod v2.12
+Auth Redux Mod v2.13
 By Leslie Krause
 
 Auth Redux is a drop-in replacement for the builtin authentication handler of Minetest.
@@ -105,11 +105,25 @@ Version 2.10b (29-Jul-2018)
   - added missing preset variable needed by rulesets
 
 Version 2.11 (04-Aug-2018)
-  - included a command-line player analytics script
+  - developed a command-line player analytics script
 
 Version 2.12 (10-Aug-2018)
   - better code consolidation of AuthFilter class
   - reworked ruleset parser to support syntax changes
+
+Version 2.13 (20-Aug-2018)
+  - developed in-game database management console
+  - combined generic filter functions into superclass
+  - updated debugger to use new GenericFilter class
+  - added flag for constant-value operands in rulesets
+  - simplified operand matching logic in rulesets
+  - optimized comparison algorithm in ruleset parser
+  - consolidated lookup tables of lexical analyzer
+  - fixed erroneous status message shown in debugger
+  - added support for per-player debugging sessions
+  - redesigned login filter APIs for new architecture
+  - switched order of return values in login filter
+  - various code refactoring and better comments
 
 Installation
 ----------------------

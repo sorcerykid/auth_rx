@@ -1,22 +1,25 @@
 --------------------------------------------------------
--- Minetest :: Auth Redux Mod v2.10 (auth_rx)
+-- Minetest :: Auth Redux Mod v2.13 (auth_rx)
 --
 -- See README.txt for licensing and release notes.
 -- Copyright (c) 2017-2018, Leslie E. Krause
 --------------------------------------------------------
 
-dofile( minetest.get_modpath( "auth_rx" ) .. "/helpers.lua" )
-dofile( minetest.get_modpath( "auth_rx" ) .. "/filter.lua" )
-dofile( minetest.get_modpath( "auth_rx" ) .. "/db.lua" )
-dofile( minetest.get_modpath( "auth_rx" ) .. "/watchdog.lua" )
-local __commands = dofile( minetest.get_modpath( "auth_rx" ) .. "/commands.lua" )
+local world_path = minetest.get_worldpath( )
+local mod_path = minetest.get_modpath( "auth_rx" )
+
+dofile( mod_path .. "/helpers.lua" )
+dofile( mod_path .. "/filter.lua" )
+dofile( mod_path .. "/db.lua" )
+dofile( mod_path .. "/watchdog.lua" )
+local __commands = dofile( mod_path .. "/commands.lua" )
 
 -----------------------------------------------------
 -- Registered Authentication Handler
 -----------------------------------------------------
 
-local auth_filter = AuthFilter( minetest.get_worldpath( ), "greenlist.mt" )
-local auth_db = AuthDatabase( minetest.get_worldpath( ), "auth.db" )
+local auth_filter = AuthFilter( world_path, "greenlist.mt" )
+local auth_db = AuthDatabase( world_path, "auth.db" )
 local auth_watchdog = AuthWatchdog( )
 
 if minetest.register_on_auth_fail then
@@ -42,7 +45,7 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		end
 	end
 
-	local num, res = auth_filter.process( {
+	local res = auth_filter.is_enabled and auth_filter.process( {
 		name = { type = FILTER_TYPE_STRING, value = player_name },
 		addr = { type = FILTER_TYPE_ADDRESS, value = convert_ipv4( player_ip ) },
 		is_new = { type = FILTER_TYPE_BOOLEAN, value = rec == nil },
@@ -64,7 +67,7 @@ minetest.register_on_prejoinplayer( function ( player_name, player_ip )
 		ip_newcheck = { type = FILTER_TYPE_MOMENT, value = meta.newcheck or 0 },
 		ip_failures = { type = FILTER_TYPE_NUMBER, value = meta.count_failures or 0 },
 		ip_attempts = { type = FILTER_TYPE_NUMBER, value = meta.count_attempts or 0 }
-	} )
+	}, true ) or nil
 
 	auth_watchdog.on_attempt( convert_ipv4( player_ip ), player_name )
 
@@ -73,12 +76,10 @@ end )
 
 minetest.register_on_joinplayer( function ( player )
 	local player_name = player:get_player_name( )
-	auth_db.on_login_success( player_name, "0.0.0.0" )
+	local player_ip =  minetest.get_player_information( player_name ).address	 -- this doesn't work in singleplayer!
+	auth_db.on_login_success( player_name, player_ip )
 	auth_db.on_session_opened( player_name )
-	minetest.after( 0.0, function ( )
-		-- hack since player status not immediately available on some MT versions
-		auth_watchdog.on_success( convert_ipv4( minetest.get_player_information( player_name ).address ) )
-	end )
+	auth_watchdog.on_success( convert_ipv4( player_ip ) )
 end )
 
 minetest.register_on_leaveplayer( function ( player )
@@ -139,5 +140,7 @@ minetest.register_authentication_handler( {
 } )
 
 auth_db.connect( )
+auth_filter.is_enabled = true
 
 __commands( { auth_db = auth_db, auth_filter = auth_filter } )
+
