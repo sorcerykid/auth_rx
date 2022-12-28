@@ -9,7 +9,9 @@
 -- Global Helper Functions
 -----------------------------------------------------
 
-get_minetest_config = core.setting_get    -- backwards compatibility
+get_minetest_config = function( key )
+	minetest.settings:get( key )
+end
 
 function convert_ipv4( str )
 	local ref = string.split( str, ".", false )
