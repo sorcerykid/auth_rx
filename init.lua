@@ -22,7 +22,15 @@ local auth_filter = AuthFilter( world_path, "greenlist.mt" )
 local auth_db = AuthDatabase( world_path, "auth.db" )
 local auth_watchdog = AuthWatchdog( )
 
-if minetest.register_on_auth_fail then
+if minetest.register_on_authplayer then
+	minetest.register_on_authplayer( function ( player_name, player_ip, is_success )
+		if is_success then
+			return
+		end
+		auth_db.on_login_failure( player_name, player_ip )
+		auth_watchdog.on_failure( convert_ipv4( player_ip ) )
+	end )
+elseif minetest.register_on_auth_fail then
 	minetest.register_on_auth_fail( function ( player_name, player_ip )
 		auth_db.on_login_failure( player_name, player_ip )
 		auth_watchdog.on_failure( convert_ipv4( player_ip ) )

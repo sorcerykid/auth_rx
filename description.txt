@@ -1,3 +1,0 @@
-Auth Redux is a drop-in replacement for the builtin authentication handler of Minetest. It is designed from the ground up to be robust and secure enough for use on high-traffic Minetest servers, while also addressing a number of outstanding engine bugs.
-
-For more information: https://forum.minetest.net/viewtopic.php?f=9&t=20393
